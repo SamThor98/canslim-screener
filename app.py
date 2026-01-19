@@ -161,6 +161,8 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
     """Run CANSLIM screen on tickers."""
     results = []
     
+    logger.info(f"Starting CANSLIM screen for {len(tickers)} tickers")
+    
     # Validate tickers
     valid_tickers = [t for t in tickers if validate_ticker(t)]
     if len(valid_tickers) < len(tickers):
@@ -170,6 +172,8 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
     if not valid_tickers:
         logger.warning("No valid tickers to screen")
         return pd.DataFrame()
+    
+    logger.info(f"Screening {len(valid_tickers)} valid tickers")
     
     for i, ticker in enumerate(valid_tickers):
         try:
@@ -181,9 +185,10 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
             sma_data = get_sma_data_cached(ticker)
             
             # Check CANSLIM criteria using config thresholds
+            # Use bool() to handle numpy boolean types
             c_pass = earnings is not None and earnings > config.earnings_growth_threshold
             l_pass = rs is not None and rs > config.relative_strength_threshold
-            trend_pass = sma_data["above_sma"] is True
+            trend_pass = bool(sma_data["above_sma"]) if sma_data["above_sma"] is not None else False
             
             if c_pass and l_pass and trend_pass:
                 info = get_company_info_cached(ticker)
@@ -197,9 +202,11 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
                     "Price": round(sma_data["current_price"], 2),
                     "50-SMA": round(sma_data["sma_50"], 2),
                 })
-                logger.info(f"{ticker} passed all CANSLIM criteria")
+                logger.info(f"[PASS] {ticker} passed all CANSLIM criteria")
             else:
-                logger.debug(f"{ticker} did not pass all criteria (C:{c_pass}, L:{l_pass}, T:{trend_pass})")
+                # Log first few failures for debugging
+                if i < 5:
+                    logger.info(f"[FAIL] {ticker}: C={c_pass}({earnings}), L={l_pass}({rs}), T={trend_pass}")
             
             # Rate limiting
             time.sleep(config.rate_limit_delay)
@@ -208,6 +215,7 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
             logger.error(f"Error screening {ticker}: {e}", exc_info=True)
             continue
     
+    logger.info(f"Screening complete: {len(results)} stocks passed out of {len(valid_tickers)}")
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 

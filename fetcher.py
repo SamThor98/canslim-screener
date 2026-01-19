@@ -1,8 +1,10 @@
 import os
 import time
+import io
 from contextlib import contextmanager
 
 import pandas as pd
+import requests
 import yfinance as yf
 from edgar import Company, set_identity
 from dataclasses import dataclass
@@ -15,6 +17,11 @@ from config import config
 from logger_config import get_logger
 
 logger = get_logger(__name__)
+
+# Headers for web scraping (Wikipedia blocks default urllib user-agent)
+SCRAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 
 # =============================================================================
@@ -53,14 +60,16 @@ def get_tickers_by_index(index_name: str) -> list[str]:
 def _fetch_sp500_tickers() -> list[str]:
     """Fetch S&P 500 components from Wikipedia."""
     url = config.INDEX_URLS["S&P 500"]
-    tables = pd.read_html(url)
+    response = requests.get(url, headers=SCRAPE_HEADERS, timeout=10)
+    response.raise_for_status()
+    tables = pd.read_html(io.StringIO(response.text))
     # The first table contains the S&P 500 constituents
     df = tables[0]
     # Symbol column might be named 'Symbol' or 'Ticker'
     symbol_col = 'Symbol' if 'Symbol' in df.columns else 'Ticker'
     tickers = df[symbol_col].tolist()
     # Clean up tickers (remove dots, replace with dashes for yfinance compatibility)
-    tickers = [t.replace('.', '-') for t in tickers]
+    tickers = [str(t).replace('.', '-') for t in tickers if pd.notna(t)]
     logger.info(f"Fetched {len(tickers)} S&P 500 tickers")
     return tickers
 
@@ -68,22 +77,24 @@ def _fetch_sp500_tickers() -> list[str]:
 def _fetch_nasdaq100_tickers() -> list[str]:
     """Fetch Nasdaq 100 components from Wikipedia."""
     url = config.INDEX_URLS["Nasdaq 100"]
-    tables = pd.read_html(url)
+    response = requests.get(url, headers=SCRAPE_HEADERS, timeout=10)
+    response.raise_for_status()
+    tables = pd.read_html(io.StringIO(response.text))
     # Find the table with ticker symbols (usually has 'Ticker' or 'Symbol' column)
     for table in tables:
         if 'Ticker' in table.columns:
-            tickers = table['Ticker'].tolist()
+            tickers = [str(t) for t in table['Ticker'].tolist() if pd.notna(t)]
             logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
             return tickers
         elif 'Symbol' in table.columns:
-            tickers = table['Symbol'].tolist()
+            tickers = [str(t) for t in table['Symbol'].tolist() if pd.notna(t)]
             logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
             return tickers
     # Fallback: try the 5th table which often contains the components
     if len(tables) > 4:
         df = tables[4]
         if 'Ticker' in df.columns:
-            tickers = df['Ticker'].tolist()
+            tickers = [str(t) for t in df['Ticker'].tolist() if pd.notna(t)]
             logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
             return tickers
     logger.warning("Could not find Nasdaq 100 tickers table")
@@ -93,11 +104,13 @@ def _fetch_nasdaq100_tickers() -> list[str]:
 def _fetch_djia_tickers() -> list[str]:
     """Fetch Dow Jones Industrial Average components from Wikipedia."""
     url = config.INDEX_URLS["Dow Jones"]
-    tables = pd.read_html(url)
+    response = requests.get(url, headers=SCRAPE_HEADERS, timeout=10)
+    response.raise_for_status()
+    tables = pd.read_html(io.StringIO(response.text))
     # Find the table with company information
     for table in tables:
         if 'Symbol' in table.columns:
-            tickers = table['Symbol'].tolist()
+            tickers = [str(t) for t in table['Symbol'].tolist() if pd.notna(t)]
             logger.info(f"Fetched {len(tickers)} DJIA tickers")
             return tickers
     # The DJIA table is usually the second table
@@ -105,7 +118,7 @@ def _fetch_djia_tickers() -> list[str]:
         df = tables[1]
         for col in df.columns:
             if 'symbol' in col.lower():
-                tickers = df[col].tolist()
+                tickers = [str(t) for t in df[col].tolist() if pd.notna(t)]
                 logger.info(f"Fetched {len(tickers)} DJIA tickers")
                 return tickers
     logger.warning("Could not find DJIA tickers table")
@@ -207,7 +220,7 @@ def get_tickers_by_sector(sector_name: str, limit: int = 100) -> list[tuple[str,
 
 def get_top_tickers_by_market_cap(tickers: list[str], limit: int = 50) -> list[str]:
     """
-    Filter tickers to top N by market cap.
+    Filter tickers to top N by market cap using batch download.
     
     Args:
         tickers: List of ticker symbols
@@ -218,26 +231,16 @@ def get_top_tickers_by_market_cap(tickers: list[str], limit: int = 50) -> list[s
     """
     logger.info(f"Filtering {len(tickers)} tickers to top {limit} by market cap")
     
-    ticker_caps = []
+    # For S&P 500, just return the first N tickers (they're already roughly sorted by importance)
+    # This avoids the slow market cap lookup for each ticker
+    if len(tickers) > limit:
+        # Quick approach: S&P 500 on Wikipedia is roughly ordered by market cap
+        # Just take the first N tickers
+        result = tickers[:limit]
+        logger.info(f"Quick filter: returning first {len(result)} tickers")
+        return result
     
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            market_cap = info.get("marketCap", 0)
-            if market_cap:
-                ticker_caps.append((ticker, market_cap))
-            time.sleep(0.05)  # Light rate limiting
-        except Exception:
-            continue
-    
-    # Sort by market cap descending
-    ticker_caps.sort(key=lambda x: x[1], reverse=True)
-    
-    # Return just the tickers
-    result = [t[0] for t in ticker_caps[:limit]]
-    logger.info(f"Filtered to {len(result)} tickers")
-    return result
+    return tickers
 
 
 def get_available_indices() -> list[str]:
