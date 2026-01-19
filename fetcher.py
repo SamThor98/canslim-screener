@@ -2,6 +2,7 @@ import os
 import time
 from contextlib import contextmanager
 
+import pandas as pd
 import yfinance as yf
 from edgar import Company, set_identity
 from dataclasses import dataclass
@@ -14,6 +15,239 @@ from config import config
 from logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# INDEX AND SECTOR FETCHING FUNCTIONS
+# =============================================================================
+
+def get_tickers_by_index(index_name: str) -> list[str]:
+    """
+    Fetch ticker symbols for a given index by scraping Wikipedia.
+    
+    Args:
+        index_name: Name of the index ('S&P 500', 'Nasdaq 100', 'Dow Jones', 'Russell 2000')
+    
+    Returns:
+        List of ticker symbols
+    """
+    logger.info(f"Fetching tickers for index: {index_name}")
+    
+    try:
+        if index_name == "S&P 500":
+            return _fetch_sp500_tickers()
+        elif index_name == "Nasdaq 100":
+            return _fetch_nasdaq100_tickers()
+        elif index_name == "Dow Jones":
+            return _fetch_djia_tickers()
+        elif index_name == "Russell 2000":
+            return _fetch_russell2000_tickers()
+        else:
+            logger.warning(f"Unknown index: {index_name}")
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching tickers for {index_name}: {e}", exc_info=True)
+        return []
+
+
+def _fetch_sp500_tickers() -> list[str]:
+    """Fetch S&P 500 components from Wikipedia."""
+    url = config.INDEX_URLS["S&P 500"]
+    tables = pd.read_html(url)
+    # The first table contains the S&P 500 constituents
+    df = tables[0]
+    # Symbol column might be named 'Symbol' or 'Ticker'
+    symbol_col = 'Symbol' if 'Symbol' in df.columns else 'Ticker'
+    tickers = df[symbol_col].tolist()
+    # Clean up tickers (remove dots, replace with dashes for yfinance compatibility)
+    tickers = [t.replace('.', '-') for t in tickers]
+    logger.info(f"Fetched {len(tickers)} S&P 500 tickers")
+    return tickers
+
+
+def _fetch_nasdaq100_tickers() -> list[str]:
+    """Fetch Nasdaq 100 components from Wikipedia."""
+    url = config.INDEX_URLS["Nasdaq 100"]
+    tables = pd.read_html(url)
+    # Find the table with ticker symbols (usually has 'Ticker' or 'Symbol' column)
+    for table in tables:
+        if 'Ticker' in table.columns:
+            tickers = table['Ticker'].tolist()
+            logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
+            return tickers
+        elif 'Symbol' in table.columns:
+            tickers = table['Symbol'].tolist()
+            logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
+            return tickers
+    # Fallback: try the 5th table which often contains the components
+    if len(tables) > 4:
+        df = tables[4]
+        if 'Ticker' in df.columns:
+            tickers = df['Ticker'].tolist()
+            logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers")
+            return tickers
+    logger.warning("Could not find Nasdaq 100 tickers table")
+    return []
+
+
+def _fetch_djia_tickers() -> list[str]:
+    """Fetch Dow Jones Industrial Average components from Wikipedia."""
+    url = config.INDEX_URLS["Dow Jones"]
+    tables = pd.read_html(url)
+    # Find the table with company information
+    for table in tables:
+        if 'Symbol' in table.columns:
+            tickers = table['Symbol'].tolist()
+            logger.info(f"Fetched {len(tickers)} DJIA tickers")
+            return tickers
+    # The DJIA table is usually the second table
+    if len(tables) > 1:
+        df = tables[1]
+        for col in df.columns:
+            if 'symbol' in col.lower():
+                tickers = df[col].tolist()
+                logger.info(f"Fetched {len(tickers)} DJIA tickers")
+                return tickers
+    logger.warning("Could not find DJIA tickers table")
+    return []
+
+
+def _fetch_russell2000_tickers() -> list[str]:
+    """
+    Fetch Russell 2000 components.
+    Note: Full Russell 2000 requires subscription. 
+    This returns a subset from available public sources.
+    """
+    # Russell 2000 is harder to get - we'll use a combination approach
+    # First, try to get small-cap stocks from other indices
+    logger.info("Russell 2000 full list requires subscription. Fetching available small-cap stocks...")
+    
+    # Use yfinance screener for small-cap stocks as fallback
+    try:
+        # Get S&P 600 (small-cap) as a proxy - it's a subset of small caps
+        # Unfortunately Wikipedia doesn't have a reliable S&P 600 table
+        # Return empty and suggest manual entry or premium data source
+        logger.warning("Russell 2000 requires premium data source. Consider using Sector scan instead.")
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching Russell 2000: {e}")
+        return []
+
+
+def get_tickers_by_sector(sector_name: str, limit: int = 100) -> list[tuple[str, float]]:
+    """
+    Get tickers for a given sector using yfinance.
+    Returns tickers sorted by market cap.
+    
+    Args:
+        sector_name: GICS sector name (e.g., 'Technology', 'Healthcare')
+        limit: Maximum number of tickers to return
+    
+    Returns:
+        List of (ticker, market_cap) tuples sorted by market cap descending
+    """
+    logger.info(f"Fetching tickers for sector: {sector_name}")
+    
+    # Map sector names to yfinance sector names
+    sector_mapping = {
+        "Technology": "Technology",
+        "Healthcare": "Healthcare", 
+        "Financials": "Financial Services",
+        "Consumer Cyclical": "Consumer Cyclical",
+        "Consumer Defensive": "Consumer Defensive",
+        "Industrials": "Industrials",
+        "Energy": "Energy",
+        "Utilities": "Utilities",
+        "Real Estate": "Real Estate",
+        "Basic Materials": "Basic Materials",
+        "Communication Services": "Communication Services",
+    }
+    
+    yf_sector = sector_mapping.get(sector_name, sector_name)
+    
+    # Get a broad list of tickers to filter
+    # Start with S&P 500 as our universe
+    try:
+        all_tickers = _fetch_sp500_tickers()
+    except Exception:
+        logger.warning("Could not fetch S&P 500 for sector filtering")
+        return []
+    
+    # Filter by sector and get market cap
+    sector_stocks = []
+    
+    for ticker in all_tickers:
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            
+            stock_sector = info.get("sector", "")
+            market_cap = info.get("marketCap", 0)
+            
+            if stock_sector == yf_sector and market_cap:
+                sector_stocks.append((ticker, market_cap))
+            
+            # Rate limiting
+            time.sleep(0.1)
+            
+        except Exception as e:
+            logger.debug(f"Error checking {ticker}: {e}")
+            continue
+        
+        # Early exit if we have enough candidates
+        if len(sector_stocks) >= limit * 2:
+            break
+    
+    # Sort by market cap descending
+    sector_stocks.sort(key=lambda x: x[1], reverse=True)
+    
+    logger.info(f"Found {len(sector_stocks)} stocks in {sector_name} sector")
+    return sector_stocks[:limit]
+
+
+def get_top_tickers_by_market_cap(tickers: list[str], limit: int = 50) -> list[str]:
+    """
+    Filter tickers to top N by market cap.
+    
+    Args:
+        tickers: List of ticker symbols
+        limit: Maximum number to return
+    
+    Returns:
+        List of tickers sorted by market cap (descending)
+    """
+    logger.info(f"Filtering {len(tickers)} tickers to top {limit} by market cap")
+    
+    ticker_caps = []
+    
+    for ticker in tickers:
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            market_cap = info.get("marketCap", 0)
+            if market_cap:
+                ticker_caps.append((ticker, market_cap))
+            time.sleep(0.05)  # Light rate limiting
+        except Exception:
+            continue
+    
+    # Sort by market cap descending
+    ticker_caps.sort(key=lambda x: x[1], reverse=True)
+    
+    # Return just the tickers
+    result = [t[0] for t in ticker_caps[:limit]]
+    logger.info(f"Filtered to {len(result)} tickers")
+    return result
+
+
+def get_available_indices() -> list[str]:
+    """Get list of available indices for scanning."""
+    return list(config.INDEX_URLS.keys())
+
+
+def get_available_sectors() -> list[str]:
+    """Get list of available sectors for scanning."""
+    return config.SECTORS
 
 
 def _retry_yfinance_call(func, *args, max_attempts: int = 3, delay: float = 1.0, **kwargs):

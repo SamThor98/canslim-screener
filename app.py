@@ -9,11 +9,18 @@ from openai import OpenAI
 # Import from existing modules to avoid duplication
 from canslim_metrics import get_price_strength, get_earnings_growth
 from screener_logic import get_sma_trend
-from fetcher import fetch_company_metadata
+from fetcher import (
+    fetch_company_metadata, 
+    get_tickers_by_index, 
+    get_tickers_by_sector,
+    get_top_tickers_by_market_cap,
+    get_available_indices,
+    get_available_sectors,
+)
 from visualizer import show_interactive_chart
 from config import config
 from logger_config import get_logger, setup_logging
-from utils import validate_ticker, normalize_tickers
+from utils import validate_ticker, normalize_tickers, clean_fetched_tickers, deduplicate_tickers
 from api_validation import validate_api_keys
 
 # Setup logging
@@ -338,15 +345,79 @@ def main():
         
         st.divider()
         
-        # Ticker input
+        # Stock Screener - Multi-mode selection
         st.subheader("📊 Stock Screener")
-        default_tickers = "NVDA, PLTR, AMD, TSLA, CELH, MSFT, GOOGL, META"
-        ticker_input = st.text_area("Enter tickers (comma-separated)", default_tickers)
-        tickers = normalize_tickers(ticker_input)
         
-        if ticker_input and not tickers:
-            st.warning("⚠️ No valid tickers found. Please enter valid ticker symbols (e.g., AAPL, MSFT).")
+        # Selection mode
+        scan_mode = st.radio(
+            "Scan Mode",
+            ["📈 Index Scan", "🏭 Sector Scan", "✏️ Manual Entry"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
         
+        # Initialize tickers list
+        tickers = []
+        scan_source = ""
+        
+        if scan_mode == "📈 Index Scan":
+            # Index selection dropdown
+            available_indices = get_available_indices()
+            selected_index = st.selectbox(
+                "Select Index",
+                available_indices,
+                help="Fetch all components from selected index"
+            )
+            scan_source = selected_index
+            
+            # Limit slider for large indices
+            scan_limit = st.slider(
+                "Limit (Top N by Market Cap)",
+                min_value=10,
+                max_value=500,
+                value=config.default_screen_limit,
+                step=10,
+                help="Limit to top stocks by market cap to avoid rate limits"
+            )
+            
+            if selected_index == "Russell 2000":
+                st.warning("⚠️ Russell 2000 requires premium data. Consider using Sector Scan.")
+        
+        elif scan_mode == "🏭 Sector Scan":
+            # Sector selection dropdown
+            available_sectors = get_available_sectors()
+            selected_sector = st.selectbox(
+                "Select Sector",
+                available_sectors,
+                help="Screen stocks within a specific sector"
+            )
+            scan_source = selected_sector
+            
+            # Limit slider for sector scan
+            scan_limit = st.slider(
+                "Limit (Top N by Market Cap)",
+                min_value=10,
+                max_value=100,
+                value=min(config.default_screen_limit, 50),
+                step=5,
+                help="Limit to top stocks by market cap"
+            )
+        
+        else:  # Manual Entry
+            default_tickers = "NVDA, PLTR, AMD, TSLA, CELH, MSFT, GOOGL, META"
+            ticker_input = st.text_area(
+                "Enter tickers (comma-separated)", 
+                default_tickers,
+                help="Enter stock symbols separated by commas"
+            )
+            tickers = normalize_tickers(ticker_input)
+            scan_limit = len(tickers)  # No limit for manual
+            scan_source = "Manual"
+            
+            if ticker_input and not tickers:
+                st.warning("⚠️ No valid tickers found. Please enter valid ticker symbols (e.g., AAPL, MSFT).")
+        
+        # Run button
         run_screen_btn = st.button("🔍 Run CANSLIM Screen", type="primary", use_container_width=True)
         
         st.divider()
@@ -372,11 +443,63 @@ def main():
         st.session_state["chat_messages"] = []
         st.session_state["selected_ticker"] = None
         
-        with st.spinner("Running CANSLIM screen..."):
-            progress = st.progress(0)
-            results = run_screen(tickers, progress)
-            st.session_state["screen_results"] = results
+        # Fetch tickers based on scan mode
+        progress = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            if scan_mode == "📈 Index Scan":
+                status_text.text(f"Fetching {scan_source} components...")
+                progress.progress(0.1)
+                
+                raw_tickers = get_tickers_by_index(scan_source)
+                raw_tickers = clean_fetched_tickers(raw_tickers)
+                
+                if len(raw_tickers) > scan_limit:
+                    status_text.text(f"Filtering to top {scan_limit} by market cap...")
+                    progress.progress(0.2)
+                    tickers = get_top_tickers_by_market_cap(raw_tickers, scan_limit)
+                else:
+                    tickers = raw_tickers
+                
+                st.info(f"📊 Loaded {len(tickers)} tickers from {scan_source}")
+            
+            elif scan_mode == "🏭 Sector Scan":
+                status_text.text(f"Fetching {scan_source} sector stocks...")
+                progress.progress(0.1)
+                
+                sector_stocks = get_tickers_by_sector(scan_source, limit=scan_limit)
+                tickers = [t[0] for t in sector_stocks]  # Extract just tickers
+                tickers = clean_fetched_tickers(tickers)
+                
+                st.info(f"🏭 Loaded {len(tickers)} tickers from {scan_source} sector")
+            
+            # Manual mode already has tickers populated
+            elif scan_mode == "✏️ Manual Entry":
+                st.info(f"✏️ Screening {len(tickers)} manually entered tickers")
+            
+            # Deduplicate
+            tickers = deduplicate_tickers(tickers)
+            
+            if not tickers:
+                st.error("❌ No valid tickers to screen. Please check your selection.")
+                progress.empty()
+                status_text.empty()
+            else:
+                status_text.text(f"Screening {len(tickers)} stocks...")
+                progress.progress(0.3)
+                
+                results = run_screen(tickers, progress)
+                st.session_state["screen_results"] = results
+                
+                progress.empty()
+                status_text.empty()
+        
+        except Exception as e:
+            logger.error(f"Error during screening: {e}", exc_info=True)
+            st.error(f"❌ Error: {str(e)}")
             progress.empty()
+            status_text.empty()
     
     # Display results
     if not st.session_state["screen_results"].empty:

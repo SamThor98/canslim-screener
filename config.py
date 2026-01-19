@@ -63,6 +63,38 @@ class Config:
     # History period for charts
     HISTORY_PERIOD: str = os.getenv("HISTORY_PERIOD", "1y")
     
+    # Default screening limit for large index/sector scans
+    DEFAULT_SCREEN_LIMIT: int = int(os.getenv("DEFAULT_SCREEN_LIMIT", "50"))
+    
+    # ==========================================================================
+    # Index URLs (Wikipedia sources for scraping)
+    # ==========================================================================
+    
+    INDEX_URLS: dict = {
+        "S&P 500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        "Nasdaq 100": "https://en.wikipedia.org/wiki/Nasdaq-100",
+        "Dow Jones": "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average",
+        "Russell 2000": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv",  # Fallback - actual Russell 2000 requires subscription
+    }
+    
+    # ==========================================================================
+    # Sector Definitions (GICS Sectors)
+    # ==========================================================================
+    
+    SECTORS: list = [
+        "Technology",
+        "Healthcare", 
+        "Financials",
+        "Consumer Cyclical",
+        "Consumer Defensive",
+        "Industrials",
+        "Energy",
+        "Utilities",
+        "Real Estate",
+        "Basic Materials",
+        "Communication Services",
+    ]
+    
     # ==========================================================================
     # Property accessors (for backward compatibility with lowercase)
     # ==========================================================================
@@ -118,6 +150,18 @@ class Config:
     @property
     def history_period(self) -> str:
         return self.HISTORY_PERIOD
+    
+    @property
+    def default_screen_limit(self) -> int:
+        return self.DEFAULT_SCREEN_LIMIT
+    
+    @property
+    def index_urls(self) -> dict:
+        return self.INDEX_URLS
+    
+    @property
+    def sectors(self) -> list:
+        return self.SECTORS
     
     # ==========================================================================
     # Validation Methods
