@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import contextmanager
 
 import yfinance as yf
@@ -9,6 +10,47 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from database import Base, Stock, QuarterlyFinancial
+from config import config
+from logger_config import get_logger
+
+logger = get_logger(__name__)
+
+
+def _retry_yfinance_call(func, *args, max_attempts: int = 3, delay: float = 1.0, **kwargs):
+    """
+    Retry wrapper for yfinance API calls to handle network issues and rate limits.
+    
+    Args:
+        func: Function to call (should be a yfinance method)
+        *args: Positional arguments for the function
+        max_attempts: Maximum number of retry attempts (default: 3)
+        delay: Delay between retries in seconds (default: 1.0)
+        **kwargs: Keyword arguments for the function
+    
+    Returns:
+        Result from the function call
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    last_exception = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = func(*args, **kwargs)
+            if attempt > 1:
+                logger.info(f"yfinance call succeeded on attempt {attempt}")
+            return result
+        except Exception as e:
+            last_exception = e
+            if attempt < max_attempts:
+                wait_time = delay * attempt  # Exponential backoff
+                logger.warning(f"yfinance call failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"yfinance call failed after {max_attempts} attempts: {e}", exc_info=True)
+    
+    raise last_exception
 
 
 @dataclass
@@ -36,23 +78,34 @@ def setup_sec_identity() -> None:
     Set up SEC identity for EDGAR API access.
     The SEC requires a user-agent with contact information.
     """
-    email = os.environ.get("SEC_EMAIL")
+    email = os.environ.get("SEC_EMAIL") or os.environ.get("SEC_API_USER_AGENT")
     if not email:
+        logger.warning("Configuration Missing: SEC_EMAIL or SEC_API_USER_AGENT not set. SEC EDGAR API features may not work.")
         print("=" * 60)
-        print("SEC EDGAR API requires identification.")
-        print("Please set your email for SEC compliance.")
+        print("⚠️  WARNING: SEC EDGAR API requires identification.")
+        print("Please set SEC_EMAIL or SEC_API_USER_AGENT environment variable.")
         print("=" * 60)
-        email = input("Enter your email address: ").strip()
-        if not email:
-            raise ValueError("Email is required for SEC EDGAR API access.")
+        try:
+            email = input("Enter your email address (or press Enter to skip): ").strip()
+            if not email:
+                logger.warning("SEC identity not set. Some features may be unavailable.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            logger.warning("SEC identity setup cancelled. Some features may be unavailable.")
+            return
     
-    set_identity(email)
-    print(f"SEC identity set: {email}")
+    try:
+        set_identity(email)
+        logger.info(f"SEC identity set: {email}")
+        print(f"SEC identity set: {email}")
+    except Exception as e:
+        logger.error(f"Error setting SEC identity: {e}", exc_info=True)
+        print(f"Warning: Could not set SEC identity: {e}")
 
 
 def fetch_company_metadata(ticker: str) -> CompanyMetadata:
     """
-    Fetch company metadata using yfinance.
+    Fetch company metadata using yfinance with retry logic.
     
     Args:
         ticker: Stock ticker symbol (e.g., 'AAPL')
@@ -60,31 +113,42 @@ def fetch_company_metadata(ticker: str) -> CompanyMetadata:
     Returns:
         CompanyMetadata with ticker, name, CIK, sector, and industry
     """
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    
-    # Extract CIK - yfinance stores it in different possible fields
-    cik = info.get("cik") or info.get("companyOfficers", [{}])[0].get("cik") if info.get("companyOfficers") else None
-    
-    # If CIK not found in yfinance, try to get it from edgartools
-    if not cik:
-        try:
-            company = Company(ticker)
-            cik = str(company.cik)
-        except Exception:
-            cik = None
-    
-    # Ensure CIK is zero-padded to 10 digits if found
-    if cik:
-        cik = str(cik).zfill(10)
-    
-    return CompanyMetadata(
-        ticker=ticker.upper(),
-        name=info.get("longName") or info.get("shortName") or ticker,
-        cik=cik,
-        sector=info.get("sector"),
-        industry=info.get("industry"),
-    )
+    try:
+        stock = yf.Ticker(ticker)
+        info = _retry_yfinance_call(lambda: stock.info)
+        
+        # Extract CIK - yfinance stores it in different possible fields
+        cik = info.get("cik") or info.get("companyOfficers", [{}])[0].get("cik") if info.get("companyOfficers") else None
+        
+        # If CIK not found in yfinance, try to get it from edgartools
+        if not cik:
+            try:
+                company = Company(ticker)
+                cik = str(company.cik)
+            except Exception:
+                cik = None
+        
+        # Ensure CIK is zero-padded to 10 digits if found
+        if cik:
+            cik = str(cik).zfill(10)
+        
+        return CompanyMetadata(
+            ticker=ticker.upper(),
+            name=info.get("longName") or info.get("shortName") or ticker,
+            cik=cik,
+            sector=info.get("sector"),
+            industry=info.get("industry"),
+        )
+    except Exception as e:
+        logger.error(f"Error fetching company metadata for {ticker}: {e}", exc_info=True)
+        # Return minimal metadata on error
+        return CompanyMetadata(
+            ticker=ticker.upper(),
+            name=ticker,
+            cik=None,
+            sector=None,
+            industry=None,
+        )
 
 
 def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
@@ -102,6 +166,7 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
         filings = company.get_filings(form="10-Q")
         
         if not filings or len(filings) == 0:
+            logger.warning(f"No 10-Q filings found for {ticker}")
             print(f"No 10-Q filings found for {ticker}")
             return None
         
@@ -146,6 +211,7 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
                     'LiabilitiesCurrent'
                 ])
         except Exception as e:
+            logger.warning(f"Could not extract all financials for {ticker}: {e}")
             print(f"Warning: Could not extract all financials: {e}")
         
         return QuarterlyFinancialData(
@@ -159,6 +225,7 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
         )
         
     except Exception as e:
+        logger.error(f"Error fetching 10-Q for {ticker}: {e}", exc_info=True)
         print(f"Error fetching 10-Q for {ticker}: {e}")
         return None
 
@@ -200,8 +267,7 @@ def _extract_value(statement, field_names: list[str]) -> float | None:
 
 
 # Database connection
-DATABASE_URL = "sqlite:///investor.db"
-engine = create_engine(DATABASE_URL, echo=False)
+engine = create_engine(config.database_url, echo=False)
 
 
 @contextmanager
@@ -248,6 +314,7 @@ def save_filing_to_db(data: QuarterlyFinancialData, ticker: str) -> bool:
         ).scalar_one_or_none()
         
         if existing:
+            logger.debug(f"Filing {data.accession_number} already exists in database")
             print(f"Filing {data.accession_number} already exists in database")
             return False
         
@@ -268,6 +335,7 @@ def save_filing_to_db(data: QuarterlyFinancialData, ticker: str) -> bool:
             )
             session.add(stock)
             session.flush()  # Get the stock.id
+            logger.info(f"Created new stock record for {ticker}")
             print(f"Created new stock record for {ticker}")
         
         # Create the quarterly financial record
@@ -282,6 +350,7 @@ def save_filing_to_db(data: QuarterlyFinancialData, ticker: str) -> bool:
             total_liabilities=data.total_liabilities,
         )
         session.add(quarterly)
+        logger.info(f"Saved filing {data.accession_number} for {ticker}")
         print(f"Saved filing {data.accession_number} for {ticker}")
         return True
 

@@ -4,6 +4,12 @@ from screener_logic import run_canslim_screen
 from visualizer import show_interactive_chart
 from ai_analyst import start_stock_chat
 from database import initialize_db
+from logger_config import setup_logging, get_logger
+from api_validation import validate_api_keys
+
+# Setup logging
+setup_logging()
+logger = get_logger(__name__)
 
 
 def main():
@@ -12,6 +18,9 @@ def main():
     print("=" * 60)
     print("  CANSLIM STOCK SCREENER & ANALYZER")
     print("=" * 60)
+    
+    # Validate API keys
+    validate_api_keys()
     
     # Initialize database
     initialize_db()
@@ -103,6 +112,7 @@ def main():
         
         # Check if OpenAI API key is set
         if not os.getenv("OPENAI_API_KEY"):
+            logger.warning("OPENAI_API_KEY not set, skipping AI analyst")
             print("\nWarning: OPENAI_API_KEY not set.")
             print("Set it with: $env:OPENAI_API_KEY = 'your-api-key'")
             print("\nSkipping AI analyst. Displaying metrics instead:")

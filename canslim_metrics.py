@@ -1,8 +1,50 @@
+import time
 import yfinance as yf
 import pandas as pd
+from config import config
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
-def get_price_strength(ticker: str, benchmark: str = "SPY") -> float | None:
+def _retry_yfinance_call(func, *args, max_attempts: int = 3, delay: float = 1.0, **kwargs):
+    """
+    Retry wrapper for yfinance API calls to handle network issues and rate limits.
+    
+    Args:
+        func: Function to call (should be a yfinance method)
+        *args: Positional arguments for the function
+        max_attempts: Maximum number of retry attempts (default: 3)
+        delay: Delay between retries in seconds (default: 1.0)
+        **kwargs: Keyword arguments for the function
+    
+    Returns:
+        Result from the function call
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    last_exception = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = func(*args, **kwargs)
+            if attempt > 1:
+                logger.info(f"yfinance call succeeded on attempt {attempt}")
+            return result
+        except Exception as e:
+            last_exception = e
+            if attempt < max_attempts:
+                wait_time = delay * attempt  # Exponential backoff
+                logger.warning(f"yfinance call failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"yfinance call failed after {max_attempts} attempts: {e}", exc_info=True)
+    
+    raise last_exception
+
+
+def get_price_strength(ticker: str, benchmark: str = None) -> float | None:
     """
     Calculate the Relative Strength of a stock compared to a benchmark.
     
@@ -11,24 +53,30 @@ def get_price_strength(ticker: str, benchmark: str = "SPY") -> float | None:
     
     Args:
         ticker: Stock ticker symbol (e.g., 'AAPL')
-        benchmark: Benchmark ticker symbol (default: 'SPY')
+        benchmark: Benchmark ticker symbol (default: from config)
     
     Returns:
         Relative Strength score (e.g., 1.2 means 20% outperformance)
         Returns None if data cannot be fetched
     """
+    if benchmark is None:
+        benchmark = config.benchmark_ticker
+    
     try:
-        # Fetch 1 year of historical data
-        ticker_data = yf.Ticker(ticker).history(period="1y")
-        benchmark_data = yf.Ticker(benchmark).history(period="1y")
+        # Fetch historical data with retry logic
+        ticker_obj = yf.Ticker(ticker)
+        benchmark_obj = yf.Ticker(benchmark)
+        
+        ticker_data = _retry_yfinance_call(lambda: ticker_obj.history(period=config.history_period))
+        benchmark_data = _retry_yfinance_call(lambda: benchmark_obj.history(period=config.history_period))
         
         # Check if we have sufficient data
         if ticker_data.empty or benchmark_data.empty:
-            print(f"Insufficient data for {ticker} or {benchmark}")
+            logger.warning(f"Insufficient data for {ticker} or {benchmark}")
             return None
         
         if len(ticker_data) < 2 or len(benchmark_data) < 2:
-            print(f"Not enough historical data points")
+            logger.warning(f"Not enough historical data points for {ticker} or {benchmark}")
             return None
         
         # Get closing prices
@@ -46,7 +94,7 @@ def get_price_strength(ticker: str, benchmark: str = "SPY") -> float | None:
         
         # Avoid division by zero
         if benchmark_pct_change == 0:
-            print(f"Benchmark {benchmark} had zero change")
+            logger.warning(f"Benchmark {benchmark} had zero change")
             return None
         
         # Calculate Relative Strength
@@ -55,8 +103,11 @@ def get_price_strength(ticker: str, benchmark: str = "SPY") -> float | None:
         
         return float(relative_strength)
         
+    except ValueError as e:
+        logger.error(f"Value error calculating price strength for {ticker}: {e}")
+        return None
     except Exception as e:
-        print(f"Error calculating price strength for {ticker}: {e}")
+        logger.error(f"Error calculating price strength for {ticker}: {e}", exc_info=True)
         return None
 
 
@@ -76,23 +127,23 @@ def get_earnings_growth(ticker: str) -> float | None:
     """
     try:
         stock = yf.Ticker(ticker)
-        quarterly_financials = stock.quarterly_financials
+        quarterly_financials = _retry_yfinance_call(lambda: stock.quarterly_financials)
         
         # Check if we have financial data
         if quarterly_financials is None or quarterly_financials.empty:
-            print(f"No quarterly financials available for {ticker}")
+            logger.warning(f"No quarterly financials available for {ticker}")
             return None
         
         # Check if Net Income row exists
         if "Net Income" not in quarterly_financials.index:
-            print(f"Net Income not found in financials for {ticker}")
+            logger.warning(f"Net Income not found in financials for {ticker}")
             return None
         
         net_income = quarterly_financials.loc["Net Income"]
         
         # Need at least 5 quarters to compare YoY (current + 4 quarters back)
         if len(net_income) < 5:
-            print(f"Insufficient quarterly data for YoY comparison for {ticker}")
+            logger.warning(f"Insufficient quarterly data for YoY comparison for {ticker}")
             return None
         
         # Get most recent quarter and same quarter last year
@@ -102,12 +153,12 @@ def get_earnings_growth(ticker: str) -> float | None:
         
         # Check for valid values
         if pd.isna(current_quarter_income) or pd.isna(year_ago_quarter_income):
-            print(f"Missing Net Income data for {ticker}")
+            logger.warning(f"Missing Net Income data for {ticker}")
             return None
         
         # Avoid division by zero or negative base
         if year_ago_quarter_income == 0:
-            print(f"Year-ago Net Income is zero for {ticker}")
+            logger.warning(f"Year-ago Net Income is zero for {ticker}")
             return None
         
         # Calculate percentage growth
@@ -115,8 +166,11 @@ def get_earnings_growth(ticker: str) -> float | None:
         
         return float(growth)
         
+    except ValueError as e:
+        logger.error(f"Value error calculating earnings growth for {ticker}: {e}")
+        return None
     except Exception as e:
-        print(f"Error calculating earnings growth for {ticker}: {e}")
+        logger.error(f"Error calculating earnings growth for {ticker}: {e}", exc_info=True)
         return None
 
 

@@ -3,7 +3,12 @@ import pandas as pd
 import yfinance as yf
 
 from canslim_metrics import get_earnings_growth, get_price_strength
-from fetcher import fetch_company_metadata
+from fetcher import fetch_company_metadata, _retry_yfinance_call
+from database import get_cached_screen, save_screen_result
+from config import config
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_sma_trend(ticker: str, period: int = 50) -> tuple[bool | None, float | None, float | None]:
@@ -21,10 +26,10 @@ def get_sma_trend(ticker: str, period: int = 50) -> tuple[bool | None, float | N
     try:
         # Fetch enough data to calculate SMA (need at least 'period' days)
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="3mo")  # ~63 trading days
+        hist = _retry_yfinance_call(lambda: stock.history(period="3mo"))  # ~63 trading days
         
         if hist.empty or len(hist) < period:
-            print(f"Insufficient data for {period}-day SMA for {ticker}")
+            logger.warning(f"Insufficient data for {period}-day SMA for {ticker}")
             return None, None, None
         
         # Calculate SMA
@@ -36,8 +41,11 @@ def get_sma_trend(ticker: str, period: int = 50) -> tuple[bool | None, float | N
         
         return is_above_sma, float(current_price), float(sma)
         
+    except ValueError as e:
+        logger.error(f"Value error calculating SMA trend for {ticker}: {e}")
+        return None, None, None
     except Exception as e:
-        print(f"Error calculating SMA trend for {ticker}: {e}")
+        logger.error(f"Error calculating SMA trend for {ticker}: {e}", exc_info=True)
         return None, None, None
 
 
@@ -58,29 +66,65 @@ def run_canslim_screen(tickers: list[str]) -> pd.DataFrame:
     """
     results = []
     
-    print(f"Screening {len(tickers)} tickers...")
+    logger.info(f"Screening {len(tickers)} tickers...")
     print("=" * 60)
     
     for i, ticker in enumerate(tickers, 1):
         print(f"\n[{i}/{len(tickers)}] Analyzing {ticker}...")
         
         try:
-            # (C) Current Earnings - check if growth > 20%
-            earnings_growth = get_earnings_growth(ticker)
-            time.sleep(0.5)  # Rate limit delay
+            # Check cache first
+            cached_data = get_cached_screen(ticker, max_age_hours=24)
             
-            c_pass = earnings_growth is not None and earnings_growth > 0.20
+            if cached_data:
+                # Use cached data
+                logger.info(f"Using cached data for {ticker}")
+                earnings_growth = cached_data.get("earnings_growth")
+                relative_strength = cached_data.get("relative_strength")
+                current_price = cached_data.get("current_price")
+                sma_50 = cached_data.get("sma_50")
+                is_above_sma = cached_data.get("is_above_sma")
+                metadata_name = cached_data.get("company_name")
+                metadata_sector = cached_data.get("sector")
+                metadata_industry = cached_data.get("industry")
+            else:
+                # Fetch from API
+                logger.info(f"Fetching fresh data for {ticker} from API")
+                
+                # (C) Current Earnings - check if growth > threshold
+                earnings_growth = get_earnings_growth(ticker)
+                time.sleep(config.rate_limit_delay)  # Rate limit delay
+                
+                # (L) Leader - check if relative strength > threshold
+                relative_strength = get_price_strength(ticker)
+                time.sleep(config.rate_limit_delay)  # Rate limit delay
+                
+                # (Trend) - check if price > SMA
+                is_above_sma, current_price, sma_50 = get_sma_trend(ticker, period=config.sma_period)
+                time.sleep(config.rate_limit_delay)  # Rate limit delay
+                
+                # Fetch company metadata
+                metadata = fetch_company_metadata(ticker)
+                metadata_name = metadata.name
+                metadata_sector = metadata.sector
+                metadata_industry = metadata.industry
+                
+                # Cache the results
+                cache_data = {
+                    "earnings_growth": earnings_growth,
+                    "relative_strength": relative_strength,
+                    "current_price": current_price,
+                    "sma_50": sma_50,
+                    "is_above_sma": is_above_sma,
+                    "company_name": metadata_name,
+                    "sector": metadata_sector,
+                    "industry": metadata_industry,
+                }
+                save_screen_result(ticker, cache_data)
             
-            # (L) Leader - check if relative strength > 1.0
-            relative_strength = get_price_strength(ticker)
-            time.sleep(0.5)  # Rate limit delay
-            
-            l_pass = relative_strength is not None and relative_strength > 1.0
-            
-            # (Trend) - check if price > 50-day SMA
-            is_above_sma, current_price, sma_50 = get_sma_trend(ticker)
-            time.sleep(0.5)  # Rate limit delay
-            
+            # Evaluate criteria
+            c_pass = earnings_growth is not None and earnings_growth > config.earnings_growth_threshold
+            l_pass = relative_strength is not None and relative_strength > config.relative_strength_threshold
             trend_pass = bool(is_above_sma) if is_above_sma is not None else False
             
             # Log individual results
@@ -90,34 +134,34 @@ def run_canslim_screen(tickers: list[str]) -> pd.DataFrame:
             
             print(f"  (C) Earnings Growth: {c_status} {'[PASS]' if c_pass else '[FAIL]'}")
             print(f"  (L) Relative Strength: {l_status} {'[PASS]' if l_pass else '[FAIL]'}")
-            print(f"  (Trend) vs 50-SMA: {trend_status} {'[PASS]' if trend_pass else '[FAIL]'}")
+            print(f"  (Trend) vs {config.sma_period}-SMA: {trend_status} {'[PASS]' if trend_pass else '[FAIL]'}")
             
             # Check if all criteria pass
             if c_pass and l_pass and trend_pass:
+                logger.info(f"{ticker} PASSES all criteria!")
                 print(f"  >>> {ticker} PASSES all criteria!")
-                
-                # Fetch company metadata for additional context
-                metadata = fetch_company_metadata(ticker)
-                time.sleep(0.5)  # Rate limit delay
                 
                 results.append({
                     "Ticker": ticker,
-                    "Company": metadata.name,
-                    "Sector": metadata.sector,
-                    "Industry": metadata.industry,
-                    "Earnings Growth (%)": round(earnings_growth * 100, 1),
-                    "Relative Strength": round(relative_strength, 2),
-                    "Current Price": round(current_price, 2),
-                    "50-Day SMA": round(sma_50, 2),
-                    "Price vs SMA (%)": round((current_price / sma_50 - 1) * 100, 1),
+                    "Company": metadata_name or ticker,
+                    "Sector": metadata_sector or "N/A",
+                    "Industry": metadata_industry or "N/A",
+                    "Earnings Growth (%)": round(earnings_growth * 100, 1) if earnings_growth else None,
+                    "Relative Strength": round(relative_strength, 2) if relative_strength else None,
+                    "Current Price": round(current_price, 2) if current_price else None,
+                    "50-Day SMA": round(sma_50, 2) if sma_50 else None,
+                    "Price vs SMA (%)": round((current_price / sma_50 - 1) * 100, 1) if current_price and sma_50 else None,
                 })
             else:
+                logger.debug(f"{ticker} does not pass all criteria (C:{c_pass}, L:{l_pass}, T:{trend_pass})")
                 print(f"  --- {ticker} does not pass all criteria")
                 
         except Exception as e:
+            logger.error(f"Error processing {ticker}: {e}", exc_info=True)
             print(f"  Error processing {ticker}: {e}")
             continue
     
+    logger.info(f"Screening complete. {len(results)} stocks passed all criteria.")
     print("\n" + "=" * 60)
     print(f"Screening complete. {len(results)} stocks passed all criteria.")
     

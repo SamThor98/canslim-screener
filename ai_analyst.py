@@ -1,5 +1,9 @@
 import os
 from openai import OpenAI
+from config import config
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def start_stock_chat(ticker: str, financial_summary: dict) -> None:
@@ -13,6 +17,7 @@ def start_stock_chat(ticker: str, financial_summary: dict) -> None:
     # Initialize OpenAI client
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        logger.error("OPENAI_API_KEY environment variable not set")
         print("Error: OPENAI_API_KEY environment variable not set.")
         print("Set it with: $env:OPENAI_API_KEY = 'your-api-key'")
         return
@@ -54,12 +59,12 @@ Use these metrics to inform your analysis. Be concise and actionable."""
             # Add user message to history
             messages.append({"role": "user", "content": user_input})
             
-            # Send to GPT-4o
+            # Send to OpenAI
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model=config.openai_model,
                 messages=messages,
-                temperature=0.7,
-                max_tokens=500,
+                temperature=config.openai_temperature,
+                max_tokens=config.openai_max_tokens,
             )
             
             # Extract and display response
@@ -69,9 +74,11 @@ Use these metrics to inform your analysis. Be concise and actionable."""
             print(f"\nAnalyst: {assistant_message}")
             
         except KeyboardInterrupt:
+            logger.info("Chat session interrupted by user")
             print("\n\nSession interrupted. Goodbye!")
             break
         except Exception as e:
+            logger.error(f"Error in chat session: {e}", exc_info=True)
             print(f"\nError: {e}")
             continue
 
