@@ -66,6 +66,9 @@ class Config:
     # Default screening limit for large index/sector scans
     DEFAULT_SCREEN_LIMIT: int = int(os.getenv("DEFAULT_SCREEN_LIMIT", "50"))
     
+    # Database URL
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///investor.db")
+    
     # ==========================================================================
     # Index URLs (Wikipedia sources for scraping)
     # ==========================================================================
@@ -154,6 +157,10 @@ class Config:
     @property
     def default_screen_limit(self) -> int:
         return self.DEFAULT_SCREEN_LIMIT
+    
+    @property
+    def database_url(self) -> str:
+        return self.DATABASE_URL
     
     @property
     def index_urls(self) -> dict:
