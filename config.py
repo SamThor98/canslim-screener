@@ -69,6 +69,10 @@ class Config:
     # Database URL
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///investor.db")
     
+    # Logging level
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    
     # ==========================================================================
     # Index URLs (Wikipedia sources for scraping)
     # ==========================================================================
@@ -161,6 +165,14 @@ class Config:
     @property
     def database_url(self) -> str:
         return self.DATABASE_URL
+    
+    @property
+    def log_level(self) -> str:
+        return self.LOG_LEVEL
+    
+    @property
+    def log_format(self) -> str:
+        return self.LOG_FORMAT
     
     @property
     def index_urls(self) -> dict:
