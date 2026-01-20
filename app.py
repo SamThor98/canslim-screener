@@ -36,7 +36,7 @@ st.set_page_config(
     page_title="Logan Screener — Growth Stock Analysis",
     page_icon="🦬",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # ============================================================================
@@ -702,10 +702,19 @@ st.markdown("""
         margin-top: 3rem;
     }
     
-    /* Hide Streamlit branding */
+    /* Hide Streamlit branding and sidebar */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    
+    /* Hide sidebar completely */
+    section[data-testid="stSidebar"] {
+        display: none !important;
+    }
+    
+    [data-testid="collapsedControl"] {
+        display: none !important;
+    }
     
     /* Animations */
     @keyframes fadeInUp {
@@ -980,147 +989,11 @@ Answer questions with the wisdom and measured perspective of an experienced valu
 # MAIN APP
 # ============================================================================
 def main():
-    # Sidebar
-    with st.sidebar:
-        # Logo and branding
-        if logo_b64:
-            st.markdown(f"""
-                <div class="logo-header">
-                    <img src="data:image/png;base64,{logo_b64}" alt="Logan Screener">
-                    <span class="logo-text">Logan Screener</span>
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="logo-text">🦬 Logan Screener</div>', unsafe_allow_html=True)
-        
-        st.markdown('<span class="section-label">Growth Stock Analysis</span>', unsafe_allow_html=True)
-        
-        st.divider()
-        
-        # Connection Status Indicator
-        st.markdown('<span class="section-label">Connection Status</span>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if config.is_openai_configured():
-                st.markdown('<span><span class="connection-dot connected"></span>OpenAI</span>', unsafe_allow_html=True)
-            else:
-                st.markdown('<span><span class="connection-dot disconnected"></span>OpenAI</span>', unsafe_allow_html=True)
-        with col2:
-            if config.is_sec_configured():
-                st.markdown('<span><span class="connection-dot connected"></span>SEC</span>', unsafe_allow_html=True)
-            else:
-                st.markdown('<span><span class="connection-dot disconnected"></span>SEC</span>', unsafe_allow_html=True)
-        
-        # Show missing keys warning
-        missing_keys = config.get_missing_keys()
-        if missing_keys:
-            with st.expander("Configuration Required", expanded=False):
-                st.warning(
-                    f"Missing: {', '.join(missing_keys)}\n\n"
-                    "**To configure:**\n"
-                    "1. Create a `.env` file in the project root\n"
-                    "2. Add your keys:\n"
-                    "```\n"
-                    "OPENAI_API_KEY=sk-your-key\n"
-                    "SEC_API_USER_AGENT=Name email@example.com\n"
-                    "```\n"
-                    "3. Restart the app"
-                )
-        
-        st.divider()
-        
-        # Stock Screener - Multi-mode selection
-        st.markdown('<span class="section-label">Screening Mode</span>', unsafe_allow_html=True)
-        
-        # Selection mode
-        scan_mode = st.radio(
-            "Scan Mode",
-            ["Index Scan", "Sector Scan", "Manual Entry"],
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-        
-        # Initialize tickers list
-        tickers = []
-        scan_source = ""
-        
-        if scan_mode == "Index Scan":
-            # Index selection dropdown
-            available_indices = get_available_indices()
-            selected_index = st.selectbox(
-                "Select Index",
-                available_indices,
-                help="Fetch all components from selected index"
-            )
-            scan_source = selected_index
-            
-            # Limit slider for large indices
-            scan_limit = st.slider(
-                "Limit (Top N by Market Cap)",
-                min_value=10,
-                max_value=500,
-                value=config.default_screen_limit,
-                step=10,
-                help="Limit to top stocks by market cap to avoid rate limits"
-            )
-            
-            if selected_index == "Russell 2000":
-                st.warning("Russell 2000 requires premium data. Consider using Sector Scan.")
-        
-        elif scan_mode == "Sector Scan":
-            # Sector selection dropdown
-            available_sectors = get_available_sectors()
-            selected_sector = st.selectbox(
-                "Select Sector",
-                available_sectors,
-                help="Screen stocks within a specific sector"
-            )
-            scan_source = selected_sector
-            
-            # Limit slider for sector scan
-            scan_limit = st.slider(
-                "Limit (Top N by Market Cap)",
-                min_value=10,
-                max_value=100,
-                value=min(config.default_screen_limit, 50),
-                step=5,
-                help="Limit to top stocks by market cap"
-            )
-        
-        else:  # Manual Entry
-            default_tickers = "NVDA, PLTR, AMD, TSLA, CELH, MSFT, GOOGL, META"
-            ticker_input = st.text_area(
-                "Enter tickers (comma-separated)", 
-                default_tickers,
-                help="Enter stock symbols separated by commas"
-            )
-            tickers = normalize_tickers(ticker_input)
-            scan_limit = len(tickers)  # No limit for manual
-            scan_source = "Manual"
-            
-            if ticker_input and not tickers:
-                st.warning("No valid tickers found. Please enter valid ticker symbols (e.g., AAPL, MSFT).")
-        
-        st.divider()
-        
-        # Run button
-        run_screen_btn = st.button("Run CANSLIM Screen", type="primary", use_container_width=True)
-        
-        st.divider()
-        
-        # CANSLIM Criteria explanation
-        st.markdown('<span class="section-label">CANSLIM Criteria</span>', unsafe_allow_html=True)
-        st.caption(f"C — Earnings Growth > {config.earnings_growth_threshold * 100:.0f}%")
-        st.caption(f"L — Relative Strength > {config.relative_strength_threshold:.1f}")
-        st.caption(f"T — Price > {config.sma_period}-day SMA")
-    
-    # Main content
     # Header with logo
     if logo_b64:
         st.markdown(f"""
-            <div style="display: flex; align-items: center; gap: 1.5rem; margin-bottom: 1rem;">
-                <img src="data:image/png;base64,{logo_b64}" alt="Logan Screener" style="height: 60px; opacity: 0.9;">
+            <div style="display: flex; align-items: center; gap: 1.5rem; margin-bottom: 0.5rem;">
+                <img src="data:image/png;base64,{logo_b64}" alt="Logan Screener" style="height: 70px; opacity: 0.9;">
                 <div>
                     <h1 style="margin: 0; line-height: 1.1;">Logan Screener</h1>
                     <span class="section-label">Strategic Growth Stock Analysis</span>
@@ -1132,6 +1005,91 @@ def main():
         st.markdown('<span class="section-label">Strategic Growth Stock Analysis</span>', unsafe_allow_html=True)
     
     st.markdown("*Built to endure. Positioned to prosper.*")
+    
+    # Connection status (inline, subtle)
+    missing_keys = config.get_missing_keys()
+    if missing_keys:
+        st.warning(f"⚠️ Missing configuration: {', '.join(missing_keys)}. Create a `.env` file with your API keys.")
+    
+    st.divider()
+    
+    # ========== SCREENING CONTROLS ==========
+    st.markdown('<span class="section-label">Stock Screener</span>', unsafe_allow_html=True)
+    
+    # Layout: Mode selection and options in columns
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        scan_mode = st.radio(
+            "Scan Mode",
+            ["Index Scan", "Sector Scan", "Manual Entry"],
+            label_visibility="collapsed"
+        )
+    
+    # Initialize tickers list
+    tickers = []
+    scan_source = ""
+    scan_limit = 50
+    
+    with col2:
+        if scan_mode == "Index Scan":
+            available_indices = get_available_indices()
+            sub_col1, sub_col2 = st.columns(2)
+            with sub_col1:
+                selected_index = st.selectbox(
+                    "Select Index",
+                    available_indices,
+                    label_visibility="collapsed"
+                )
+            with sub_col2:
+                scan_limit = st.slider(
+                    "Limit",
+                    min_value=10,
+                    max_value=200,
+                    value=config.default_screen_limit,
+                    step=10,
+                    label_visibility="collapsed"
+                )
+            scan_source = selected_index
+            
+        elif scan_mode == "Sector Scan":
+            available_sectors = get_available_sectors()
+            sub_col1, sub_col2 = st.columns(2)
+            with sub_col1:
+                selected_sector = st.selectbox(
+                    "Select Sector",
+                    available_sectors,
+                    label_visibility="collapsed"
+                )
+            with sub_col2:
+                scan_limit = st.slider(
+                    "Limit",
+                    min_value=10,
+                    max_value=100,
+                    value=min(config.default_screen_limit, 50),
+                    step=5,
+                    label_visibility="collapsed"
+                )
+            scan_source = selected_sector
+            
+        else:  # Manual Entry
+            default_tickers = "NVDA, PLTR, AMD, TSLA, CELH, MSFT, GOOGL, META"
+            ticker_input = st.text_input(
+                "Enter tickers",
+                default_tickers,
+                label_visibility="collapsed",
+                placeholder="Enter tickers separated by commas (e.g., AAPL, MSFT, GOOGL)"
+            )
+            tickers = normalize_tickers(ticker_input)
+            scan_limit = len(tickers)
+            scan_source = "Manual"
+    
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+        run_screen_btn = st.button("🔍 Run Screen", type="primary", use_container_width=True)
+    
+    # CANSLIM criteria hint
+    st.caption(f"**Criteria:** Earnings Growth > {config.earnings_growth_threshold * 100:.0f}% · Relative Strength > {config.relative_strength_threshold:.1f} · Price > {config.sma_period}-day SMA")
     
     # Initialize session state
     if "screen_results" not in st.session_state:
