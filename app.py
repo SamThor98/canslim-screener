@@ -1,5 +1,6 @@
 import os
 import time
+import base64
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -32,60 +33,524 @@ validate_api_keys()
 
 # Must be called first
 st.set_page_config(
-    page_title="CANSLIM Stock Screener",
-    page_icon="📈",
+    page_title="Logan Screener — Growth Stock Analysis",
+    page_icon="🦬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ============================================================================
-# STYLING
+# LOAD LOGO AS BASE64 FOR EMBEDDING
+# ============================================================================
+def get_logo_base64():
+    """Load logo as base64 for embedding in HTML."""
+    try:
+        logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        with open(logo_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return None
+
+logo_b64 = get_logo_base64()
+
+# ============================================================================
+# OLD LOGAN CAPITAL STYLING
 # ============================================================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@400;500;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700;9..144,900&family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
     
+    /* CSS Variables */
+    :root {
+        --cream: #F5F1E8;
+        --cream-dark: #EBE5D6;
+        --dark: #1a1a1a;
+        --dark-alt: #2a2a2a;
+        --forest: #1A3A2E;
+        --forest-light: #2D5A4A;
+        --gold: #C9A962;
+        --text: #1a1a1a;
+        --text-muted: #5a5a5a;
+        --border: rgba(26, 26, 26, 0.1);
+        --border-light: rgba(26, 26, 26, 0.05);
+        --success: #2D5A4A;
+        --warning: #C9A962;
+        --error: #8B3A3A;
+    }
+    
+    /* Main App Background */
     .stApp {
-        background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0f0f23 100%);
+        background: var(--cream) !important;
     }
     
-    h1, h2, h3 {
-        font-family: 'Space Grotesk', sans-serif !important;
-        color: #00d4aa !important;
+    /* Main container styling */
+    .main .block-container {
+        padding-top: 2rem;
+        max-width: 1400px;
     }
     
-    .metric-card {
-        background: rgba(0, 212, 170, 0.1);
-        border: 1px solid #00d4aa;
-        border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
+    /* Headers */
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Fraunces', serif !important;
+        color: var(--dark) !important;
+        letter-spacing: -0.5px;
     }
     
+    h1 {
+        font-size: 3rem !important;
+        font-weight: 700 !important;
+        letter-spacing: -2px !important;
+    }
+    
+    h2 {
+        font-size: 2rem !important;
+        font-weight: 600 !important;
+    }
+    
+    h3 {
+        font-size: 1.5rem !important;
+        font-weight: 600 !important;
+    }
+    
+    /* Body text */
+    p, span, div, label {
+        font-family: 'DM Sans', sans-serif !important;
+        color: var(--text);
+    }
+    
+    /* Muted text */
+    .text-muted, .stCaption, small {
+        color: var(--text-muted) !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    
+    /* Section Labels */
+    .section-label {
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.7rem !important;
+        text-transform: uppercase;
+        letter-spacing: 2.5px;
+        color: var(--text-muted) !important;
+        margin-bottom: 0.5rem;
+        display: block;
+    }
+    
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: rgba(255, 255, 255, 0.7) !important;
+        border-right: 1px solid var(--border) !important;
+    }
+    
+    section[data-testid="stSidebar"] > div {
+        padding-top: 2rem;
+    }
+    
+    /* Cards / Containers */
+    .logan-card {
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid var(--border);
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+        transition: all 0.3s ease;
+        position: relative;
+    }
+    
+    .logan-card:hover {
+        border-color: var(--dark);
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    }
+    
+    /* Metrics display */
+    .metric-container {
+        background: rgba(255, 255, 255, 0.5);
+        border: 1px solid var(--border);
+        padding: 1.5rem;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .metric-container:hover {
+        border-color: var(--dark);
+    }
+    
+    .metric-value {
+        font-family: 'Fraunces', serif !important;
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--dark);
+        letter-spacing: -1px;
+        margin-bottom: 0.25rem;
+    }
+    
+    .metric-label {
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+    }
+    
+    /* Pass/Fail badges */
     .pass-badge {
-        background: #00d4aa;
-        color: #0f0f23;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: bold;
-        font-size: 12px;
+        background: var(--forest);
+        color: var(--cream);
+        padding: 0.4rem 1rem;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        display: inline-block;
     }
     
     .fail-badge {
-        background: #ff6b6b;
-        color: #0f0f23;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: bold;
-        font-size: 12px;
+        background: var(--error);
+        color: var(--cream);
+        padding: 0.4rem 1rem;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        display: inline-block;
     }
     
+    /* Buttons */
+    .stButton > button {
+        font-family: 'DM Sans', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.5px !important;
+        background: var(--dark) !important;
+        color: var(--cream) !important;
+        border: 1px solid var(--dark) !important;
+        border-radius: 0 !important;
+        padding: 0.7rem 1.8rem !important;
+        transition: all 0.3s ease !important;
+        clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    }
+    
+    .stButton > button:hover {
+        background: var(--cream) !important;
+        color: var(--dark) !important;
+    }
+    
+    /* Primary button override */
+    .stButton > button[kind="primary"] {
+        background: var(--forest) !important;
+        border-color: var(--forest) !important;
+    }
+    
+    .stButton > button[kind="primary"]:hover {
+        background: var(--forest-light) !important;
+        border-color: var(--forest-light) !important;
+        color: var(--cream) !important;
+    }
+    
+    /* Input fields */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea,
+    .stSelectbox > div > div > div {
+        font-family: 'DM Sans', sans-serif !important;
+        background: rgba(255, 255, 255, 0.7) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 0 !important;
+        color: var(--text) !important;
+    }
+    
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: var(--dark) !important;
+        box-shadow: none !important;
+    }
+    
+    /* DataFrame styling */
     .stDataFrame {
-        font-family: 'JetBrains Mono', monospace !important;
+        font-family: 'IBM Plex Mono', monospace !important;
     }
     
-    div[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #1a1a3e 0%, #0f0f23 100%);
+    .stDataFrame table {
+        background: rgba(255, 255, 255, 0.7) !important;
+        border: 1px solid var(--border) !important;
+    }
+    
+    .stDataFrame th {
+        background: var(--dark) !important;
+        color: var(--cream) !important;
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+    }
+    
+    .stDataFrame td {
+        font-family: 'DM Sans', sans-serif !important;
+        border-bottom: 1px solid var(--border-light) !important;
+    }
+    
+    /* Dividers */
+    hr {
+        border: none !important;
+        border-top: 1px solid var(--border) !important;
+        margin: 2rem 0 !important;
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        font-family: 'Fraunces', serif !important;
+        color: var(--dark) !important;
+        font-weight: 700 !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        font-family: 'IBM Plex Mono', monospace !important;
+        font-size: 0.7rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+        color: var(--text-muted) !important;
+    }
+    
+    [data-testid="stMetricDelta"] {
+        font-family: 'IBM Plex Mono', monospace !important;
+    }
+    
+    /* Chat messages */
+    .stChatMessage {
+        background: rgba(255, 255, 255, 0.5) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 0 !important;
+    }
+    
+    /* Chat input */
+    .stChatInput > div {
+        background: rgba(255, 255, 255, 0.7) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 0 !important;
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div > div {
+        background: var(--forest) !important;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        font-family: 'DM Sans', sans-serif !important;
+        font-weight: 600 !important;
+        color: var(--dark) !important;
+        background: rgba(255, 255, 255, 0.5) !important;
+        border: 1px solid var(--border) !important;
+    }
+    
+    /* Radio buttons */
+    .stRadio > div {
+        background: transparent !important;
+    }
+    
+    .stRadio label {
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    /* Slider */
+    .stSlider > div > div > div > div {
+        background: var(--forest) !important;
+    }
+    
+    /* Success/Warning/Error messages */
+    .stSuccess {
+        background: rgba(45, 90, 74, 0.1) !important;
+        border-left: 4px solid var(--forest) !important;
+        color: var(--dark) !important;
+    }
+    
+    .stWarning {
+        background: rgba(201, 169, 98, 0.1) !important;
+        border-left: 4px solid var(--gold) !important;
+        color: var(--dark) !important;
+    }
+    
+    .stError {
+        background: rgba(139, 58, 58, 0.1) !important;
+        border-left: 4px solid var(--error) !important;
+        color: var(--dark) !important;
+    }
+    
+    .stInfo {
+        background: rgba(26, 26, 26, 0.05) !important;
+        border-left: 4px solid var(--dark) !important;
+        color: var(--dark) !important;
+    }
+    
+    /* Selectbox */
+    [data-baseweb="select"] {
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    /* Logo header */
+    .logo-header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .logo-header img {
+        height: 50px;
+        width: auto;
+        opacity: 0.9;
+    }
+    
+    .logo-text {
+        font-family: 'Fraunces', serif;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--dark);
+        letter-spacing: -0.5px;
+    }
+    
+    /* Stats grid */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1.5rem;
+        margin: 2rem 0;
+    }
+    
+    .stat-item {
+        background: rgba(255, 255, 255, 0.5);
+        border: 1px solid var(--border);
+        padding: 1.5rem;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-item:hover {
+        border-color: var(--dark);
+        background: rgba(255, 255, 255, 0.8);
+    }
+    
+    .stat-value {
+        font-family: 'Fraunces', serif;
+        font-size: 2rem;
+        font-weight: 700;
+        color: var(--dark);
+        margin-bottom: 0.25rem;
+    }
+    
+    .stat-label {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+    }
+    
+    /* Stock card */
+    .stock-card {
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid var(--border);
+        padding: 2rem;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .stock-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+        transition: left 0.5s ease;
+    }
+    
+    .stock-card:hover::before {
+        left: 100%;
+    }
+    
+    .stock-card:hover {
+        border-color: var(--dark);
+        background: rgba(255, 255, 255, 0.9);
+        transform: translateY(-3px);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    }
+    
+    .stock-ticker {
+        font-family: 'Fraunces', serif;
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--dark);
+        margin-bottom: 0.5rem;
+    }
+    
+    .stock-name {
+        font-family: 'DM Sans', sans-serif;
+        font-size: 1rem;
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+    }
+    
+    .stock-tag {
+        display: inline-block;
+        padding: 0.4rem 1rem;
+        background: var(--dark);
+        color: var(--cream);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    
+    /* Connection indicators */
+    .connection-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+    
+    .connection-dot.connected {
+        background: var(--forest);
+    }
+    
+    .connection-dot.disconnected {
+        background: var(--error);
+    }
+    
+    /* Footer style text */
+    .footer-text {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-align: center;
+        padding: 2rem 0;
+        border-top: 1px solid var(--border-light);
+        margin-top: 3rem;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Animations */
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    .fade-in-up {
+        animation: fadeInUp 0.6s ease both;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -223,7 +688,7 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
 # CHART FUNCTION
 # ============================================================================
 def create_chart(ticker: str) -> go.Figure:
-    """Create interactive candlestick chart."""
+    """Create interactive candlestick chart with Old Logan Capital styling."""
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=config.history_period)
@@ -237,34 +702,63 @@ def create_chart(ticker: str) -> go.Figure:
         
         fig = go.Figure()
         
+        # Candlestick with OLC colors
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"],
             low=df["Low"], close=df["Close"], name="Price",
-            increasing_line_color="#00d4aa", decreasing_line_color="#ff6b6b",
-            increasing_fillcolor="#00d4aa", decreasing_fillcolor="#ff6b6b",
+            increasing_line_color="#1A3A2E",  # Forest green for up
+            decreasing_line_color="#8B3A3A",  # Muted red for down
+            increasing_fillcolor="#2D5A4A",
+            decreasing_fillcolor="#8B3A3A",
         ))
         
+        # 50-day SMA - Gold
         fig.add_trace(go.Scatter(
             x=df.index, y=df["SMA_50"], mode="lines",
-            name=f"{config.sma_period}-Day SMA", line=dict(color="#3b9dff", width=2)
+            name=f"{config.sma_period}-Day SMA", 
+            line=dict(color="#C9A962", width=2)
         ))
         
+        # 200-day SMA - Dark
         if sma_200_series is not None:
             fig.add_trace(go.Scatter(
                 x=df.index, y=sma_200_series, mode="lines",
-                name=f"{config.sma_200_period}-Day SMA", line=dict(color="#ff4757", width=2)
+                name=f"{config.sma_200_period}-Day SMA", 
+                line=dict(color="#1a1a1a", width=2)
             ))
         
+        # OLC-style layout
         fig.update_layout(
-            title=f"{ticker} - 1 Year Chart",
-            template="plotly_dark",
-            paper_bgcolor="#0f0f23",
-            plot_bgcolor="#1a1a3e",
-            font=dict(color="#c9d1d9"),
-            xaxis=dict(rangeslider=dict(visible=False), gridcolor="#30363d"),
-            yaxis=dict(gridcolor="#30363d", side="right"),
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
+            title=dict(
+                text=f"{ticker} — 1 Year Price History",
+                font=dict(family="Fraunces", size=24, color="#1a1a1a")
+            ),
+            paper_bgcolor="#F5F1E8",
+            plot_bgcolor="#F5F1E8",
+            font=dict(family="DM Sans", color="#1a1a1a"),
+            xaxis=dict(
+                rangeslider=dict(visible=False), 
+                gridcolor="rgba(26, 26, 26, 0.1)",
+                linecolor="rgba(26, 26, 26, 0.2)",
+                tickfont=dict(family="IBM Plex Mono", size=10),
+            ),
+            yaxis=dict(
+                gridcolor="rgba(26, 26, 26, 0.1)", 
+                side="right",
+                linecolor="rgba(26, 26, 26, 0.2)",
+                tickfont=dict(family="IBM Plex Mono", size=10),
+                tickformat="$,.0f",
+            ),
+            legend=dict(
+                orientation="h", 
+                y=1.1, 
+                x=0.5, 
+                xanchor="center",
+                font=dict(family="IBM Plex Mono", size=11),
+                bgcolor="rgba(255, 255, 255, 0.5)",
+            ),
             height=500,
+            margin=dict(l=20, r=60, t=80, b=40),
         )
         
         return fig
@@ -280,7 +774,7 @@ def get_ai_response(messages: list, ticker: str, metrics: dict) -> str:
     """Get response from OpenAI."""
     if not config.is_openai_configured():
         return (
-            "⚠️ **OpenAI API key not configured.**\n\n"
+            "**OpenAI API key not configured.**\n\n"
             "To enable AI analysis:\n"
             "1. Create a `.env` file in the project root\n"
             "2. Add: `OPENAI_API_KEY=sk-your-key-here`\n"
@@ -292,10 +786,10 @@ def get_ai_response(messages: list, ticker: str, metrics: dict) -> str:
     try:
         client = OpenAI(api_key=api_key)
         
-        system_prompt = f"""You are a veteran growth stock trader. Analyze {ticker} based on these CANSLIM metrics:
+        system_prompt = f"""You are a veteran growth stock analyst at Old Logan Capital, a strategic investment firm. Analyze {ticker} based on these CANSLIM metrics:
 {chr(10).join(f'- {k}: {v}' for k, v in metrics.items())}
 
-Answer questions briefly, focusing on risk and technical strength. Be concise and actionable."""
+Answer questions with the wisdom and measured perspective of an experienced value investor. Be concise, insightful, and focus on risk assessment and long-term value creation potential. Use clear, professional language."""
         
         full_messages = [{"role": "system", "content": system_prompt}] + messages
         
@@ -318,27 +812,40 @@ Answer questions briefly, focusing on risk and technical strength. Be concise an
 def main():
     # Sidebar
     with st.sidebar:
-        st.title("⚙️ Settings")
+        # Logo and branding
+        if logo_b64:
+            st.markdown(f"""
+                <div class="logo-header">
+                    <img src="data:image/png;base64,{logo_b64}" alt="Logan Screener">
+                    <span class="logo-text">Logan Screener</span>
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="logo-text">🦬 Logan Screener</div>', unsafe_allow_html=True)
+        
+        st.markdown('<span class="section-label">Growth Stock Analysis</span>', unsafe_allow_html=True)
+        
+        st.divider()
         
         # Connection Status Indicator
-        st.subheader("🔌 Connection Status")
+        st.markdown('<span class="section-label">Connection Status</span>', unsafe_allow_html=True)
         
         col1, col2 = st.columns(2)
         with col1:
             if config.is_openai_configured():
-                st.markdown("🟢 **OpenAI**")
+                st.markdown('<span><span class="connection-dot connected"></span>OpenAI</span>', unsafe_allow_html=True)
             else:
-                st.markdown("🔴 **OpenAI**")
+                st.markdown('<span><span class="connection-dot disconnected"></span>OpenAI</span>', unsafe_allow_html=True)
         with col2:
             if config.is_sec_configured():
-                st.markdown("🟢 **SEC**")
+                st.markdown('<span><span class="connection-dot connected"></span>SEC</span>', unsafe_allow_html=True)
             else:
-                st.markdown("🔴 **SEC**")
+                st.markdown('<span><span class="connection-dot disconnected"></span>SEC</span>', unsafe_allow_html=True)
         
         # Show missing keys warning
         missing_keys = config.get_missing_keys()
         if missing_keys:
-            with st.expander("⚠️ Missing Configuration", expanded=False):
+            with st.expander("Configuration Required", expanded=False):
                 st.warning(
                     f"Missing: {', '.join(missing_keys)}\n\n"
                     "**To configure:**\n"
@@ -354,12 +861,12 @@ def main():
         st.divider()
         
         # Stock Screener - Multi-mode selection
-        st.subheader("📊 Stock Screener")
+        st.markdown('<span class="section-label">Screening Mode</span>', unsafe_allow_html=True)
         
         # Selection mode
         scan_mode = st.radio(
             "Scan Mode",
-            ["📈 Index Scan", "🏭 Sector Scan", "✏️ Manual Entry"],
+            ["Index Scan", "Sector Scan", "Manual Entry"],
             horizontal=True,
             label_visibility="collapsed"
         )
@@ -368,7 +875,7 @@ def main():
         tickers = []
         scan_source = ""
         
-        if scan_mode == "📈 Index Scan":
+        if scan_mode == "Index Scan":
             # Index selection dropdown
             available_indices = get_available_indices()
             selected_index = st.selectbox(
@@ -389,9 +896,9 @@ def main():
             )
             
             if selected_index == "Russell 2000":
-                st.warning("⚠️ Russell 2000 requires premium data. Consider using Sector Scan.")
+                st.warning("Russell 2000 requires premium data. Consider using Sector Scan.")
         
-        elif scan_mode == "🏭 Sector Scan":
+        elif scan_mode == "Sector Scan":
             # Sector selection dropdown
             available_sectors = get_available_sectors()
             selected_sector = st.selectbox(
@@ -423,20 +930,38 @@ def main():
             scan_source = "Manual"
             
             if ticker_input and not tickers:
-                st.warning("⚠️ No valid tickers found. Please enter valid ticker symbols (e.g., AAPL, MSFT).")
-        
-        # Run button
-        run_screen_btn = st.button("🔍 Run CANSLIM Screen", type="primary", use_container_width=True)
+                st.warning("No valid tickers found. Please enter valid ticker symbols (e.g., AAPL, MSFT).")
         
         st.divider()
-        st.caption("CANSLIM Criteria:")
-        st.caption(f"• (C) Earnings Growth > {config.earnings_growth_threshold * 100:.0f}%")
-        st.caption(f"• (L) Relative Strength > {config.relative_strength_threshold:.1f}")
-        st.caption(f"• (T) Price > {config.sma_period}-day SMA")
+        
+        # Run button
+        run_screen_btn = st.button("Run CANSLIM Screen", type="primary", use_container_width=True)
+        
+        st.divider()
+        
+        # CANSLIM Criteria explanation
+        st.markdown('<span class="section-label">CANSLIM Criteria</span>', unsafe_allow_html=True)
+        st.caption(f"C — Earnings Growth > {config.earnings_growth_threshold * 100:.0f}%")
+        st.caption(f"L — Relative Strength > {config.relative_strength_threshold:.1f}")
+        st.caption(f"T — Price > {config.sma_period}-day SMA")
     
     # Main content
-    st.title("📈 CANSLIM Stock Screener")
-    st.markdown("*Find high-growth stocks with strong momentum*")
+    # Header with logo
+    if logo_b64:
+        st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 1.5rem; margin-bottom: 1rem;">
+                <img src="data:image/png;base64,{logo_b64}" alt="Logan Screener" style="height: 60px; opacity: 0.9;">
+                <div>
+                    <h1 style="margin: 0; line-height: 1.1;">Logan Screener</h1>
+                    <span class="section-label">Strategic Growth Stock Analysis</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.title("🦬 Logan Screener")
+        st.markdown('<span class="section-label">Strategic Growth Stock Analysis</span>', unsafe_allow_html=True)
+    
+    st.markdown("*Built to endure. Positioned to prosper.*")
     
     # Initialize session state
     if "screen_results" not in st.session_state:
@@ -456,7 +981,7 @@ def main():
         status_text = st.empty()
         
         try:
-            if scan_mode == "📈 Index Scan":
+            if scan_mode == "Index Scan":
                 status_text.text(f"Fetching {scan_source} components...")
                 progress.progress(0.1)
                 
@@ -470,9 +995,9 @@ def main():
                 else:
                     tickers = raw_tickers
                 
-                st.info(f"📊 Loaded {len(tickers)} tickers from {scan_source}")
+                st.info(f"Loaded {len(tickers)} tickers from {scan_source}")
             
-            elif scan_mode == "🏭 Sector Scan":
+            elif scan_mode == "Sector Scan":
                 status_text.text(f"Fetching {scan_source} sector stocks...")
                 progress.progress(0.1)
                 
@@ -480,17 +1005,17 @@ def main():
                 tickers = [t[0] for t in sector_stocks]  # Extract just tickers
                 tickers = clean_fetched_tickers(tickers)
                 
-                st.info(f"🏭 Loaded {len(tickers)} tickers from {scan_source} sector")
+                st.info(f"Loaded {len(tickers)} tickers from {scan_source} sector")
             
             # Manual mode already has tickers populated
-            elif scan_mode == "✏️ Manual Entry":
-                st.info(f"✏️ Screening {len(tickers)} manually entered tickers")
+            elif scan_mode == "Manual Entry":
+                st.info(f"Screening {len(tickers)} manually entered tickers")
             
             # Deduplicate
             tickers = deduplicate_tickers(tickers)
             
             if not tickers:
-                st.error("❌ No valid tickers to screen. Please check your selection.")
+                st.error("No valid tickers to screen. Please check your selection.")
                 progress.empty()
                 status_text.empty()
             else:
@@ -505,13 +1030,22 @@ def main():
         
         except Exception as e:
             logger.error(f"Error during screening: {e}", exc_info=True)
-            st.error(f"❌ Error: {str(e)}")
+            st.error(f"Error: {str(e)}")
             progress.empty()
             status_text.empty()
     
     # Display results
     if not st.session_state["screen_results"].empty:
-        st.success(f"✅ {len(st.session_state['screen_results'])} stocks passed all criteria!")
+        st.divider()
+        
+        # Results header
+        num_results = len(st.session_state['screen_results'])
+        st.markdown(f"""
+            <div style="margin-bottom: 1.5rem;">
+                <span class="section-label">Screening Results</span>
+                <h2 style="margin-top: 0.5rem;">{num_results} Stocks Passed All Criteria</h2>
+            </div>
+        """, unsafe_allow_html=True)
         
         st.dataframe(
             st.session_state["screen_results"],
@@ -521,31 +1055,41 @@ def main():
         
         # Stock selection
         st.divider()
+        st.markdown('<span class="section-label">Deep Dive Analysis</span>', unsafe_allow_html=True)
+        
         passing_tickers = st.session_state["screen_results"]["Ticker"].tolist()
         
         col1, col2 = st.columns([3, 1])
         with col1:
             selected = st.selectbox("Select a stock to analyze:", passing_tickers)
         with col2:
-            analyze_btn = st.button("📊 Deep Dive", type="primary")
+            analyze_btn = st.button("Analyze", type="primary")
         
         if analyze_btn:
             st.session_state["selected_ticker"] = selected
             st.session_state["chat_messages"] = []
     
     elif run_screen_btn:
-        st.warning("No stocks passed all CANSLIM criteria. Try different tickers.")
+        st.warning("No stocks passed all CANSLIM criteria. Try different tickers or adjust your selection.")
     
     # Deep dive section
     if st.session_state["selected_ticker"]:
         ticker = st.session_state["selected_ticker"]
         st.divider()
-        st.header(f"🔬 Deep Dive: {ticker}")
         
         # Get metrics for this ticker
         row = st.session_state["screen_results"][
             st.session_state["screen_results"]["Ticker"] == ticker
         ].iloc[0]
+        
+        # Header
+        st.markdown(f"""
+            <div style="margin-bottom: 2rem;">
+                <span class="section-label">Deep Dive</span>
+                <h2 style="margin-top: 0.5rem;">{ticker} — {row["Company"]}</h2>
+                <p style="color: #5a5a5a; margin-top: 0.25rem;">{row["Sector"]} · {row["Industry"]}</p>
+            </div>
+        """, unsafe_allow_html=True)
         
         metrics = {
             "Company": row["Company"],
@@ -557,27 +1101,39 @@ def main():
             "50-Day SMA": f"${row['50-SMA']}",
         }
         
-        # Metrics cards
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Earnings Growth", f"{row['Earnings Growth %']}%", 
-                     delta="PASS" if row['Earnings Growth %'] > config.earnings_growth_threshold * 100 else None)
-        with col2:
-            st.metric("Relative Strength", row['Relative Strength'],
-                     delta="PASS" if row['Relative Strength'] > config.relative_strength_threshold else None)
-        with col3:
-            st.metric("Current Price", f"${row['Price']}")
-        with col4:
-            st.metric("50-Day SMA", f"${row['50-SMA']}")
+        # Metrics cards in OLC style
+        st.markdown("""
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value">""" + f"{row['Earnings Growth %']}%" + """</div>
+                    <div class="stat-label">Earnings Growth</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">""" + f"{row['Relative Strength']}" + """</div>
+                    <div class="stat-label">Relative Strength</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">$""" + f"{row['Price']}" + """</div>
+                    <div class="stat-label">Current Price</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">$""" + f"{row['50-SMA']}" + """</div>
+                    <div class="stat-label">50-Day SMA</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
         
         # Chart
-        st.subheader("📈 Price Chart")
+        st.markdown('<span class="section-label">Price History</span>', unsafe_allow_html=True)
         chart = create_chart(ticker)
         if chart:
             st.plotly_chart(chart, use_container_width=True)
         
+        st.divider()
+        
         # AI Chat
-        st.subheader("🤖 AI Analyst Chat")
+        st.markdown('<span class="section-label">AI Analyst</span>', unsafe_allow_html=True)
+        st.markdown(f"*Ask our AI analyst about {ticker}*")
         
         # Display chat history
         for msg in st.session_state["chat_messages"]:
@@ -601,6 +1157,13 @@ def main():
                     st.write(response)
             
             st.session_state["chat_messages"].append({"role": "assistant", "content": response})
+    
+    # Footer
+    st.markdown("""
+        <div class="footer-text">
+            © 2025 Logan Screener · Built with strategic vision
+        </div>
+    """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
