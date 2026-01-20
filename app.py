@@ -271,12 +271,12 @@ st.markdown("""
     }
     
     .stDataFrame table {
-        background: rgba(255, 255, 255, 0.7) !important;
+        background: rgba(255, 255, 255, 0.9) !important;
         border: 1px solid var(--border) !important;
     }
     
     .stDataFrame th {
-        background: var(--dark) !important;
+        background: var(--forest) !important;
         color: var(--cream) !important;
         font-family: 'IBM Plex Mono', monospace !important;
         font-size: 0.75rem !important;
@@ -286,7 +286,27 @@ st.markdown("""
     
     .stDataFrame td {
         font-family: 'DM Sans', sans-serif !important;
+        background: rgba(255, 255, 255, 0.9) !important;
+        color: var(--text) !important;
         border-bottom: 1px solid var(--border-light) !important;
+    }
+    
+    .stDataFrame tr:hover td {
+        background: rgba(245, 241, 232, 1) !important;
+    }
+    
+    /* DataFrame container */
+    [data-testid="stDataFrame"] > div {
+        background: transparent !important;
+    }
+    
+    /* Glide data grid (new Streamlit tables) */
+    .glideDataEditor {
+        background: var(--cream) !important;
+    }
+    
+    .dvn-scroller {
+        background: var(--cream) !important;
     }
     
     /* Dividers */
@@ -317,16 +337,34 @@ st.markdown("""
     
     /* Chat messages */
     .stChatMessage {
-        background: rgba(255, 255, 255, 0.5) !important;
+        background: rgba(255, 255, 255, 0.7) !important;
         border: 1px solid var(--border) !important;
         border-radius: 0 !important;
     }
     
+    .stChatMessage [data-testid="chatAvatarIcon-assistant"] {
+        background: var(--forest) !important;
+    }
+    
+    .stChatMessage [data-testid="chatAvatarIcon-user"] {
+        background: var(--dark) !important;
+    }
+    
     /* Chat input */
     .stChatInput > div {
-        background: rgba(255, 255, 255, 0.7) !important;
+        background: rgba(255, 255, 255, 0.9) !important;
         border: 1px solid var(--border) !important;
         border-radius: 0 !important;
+    }
+    
+    .stChatInput input {
+        background: transparent !important;
+        color: var(--text) !important;
+    }
+    
+    .stChatInput button {
+        background: var(--forest) !important;
+        color: var(--cream) !important;
     }
     
     /* Progress bar */
@@ -385,6 +423,138 @@ st.markdown("""
     /* Selectbox */
     [data-baseweb="select"] {
         font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    /* ============================================ */
+    /* FIX DARK POPUPS - Dropdown Menus & Modals */
+    /* ============================================ */
+    
+    /* Dropdown menu container */
+    [data-baseweb="popover"] {
+        background: var(--cream) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1) !important;
+    }
+    
+    /* Dropdown menu list */
+    [data-baseweb="menu"] {
+        background: var(--cream) !important;
+        border: none !important;
+    }
+    
+    /* Dropdown menu items */
+    [data-baseweb="menu"] ul {
+        background: var(--cream) !important;
+    }
+    
+    [data-baseweb="menu"] li {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    [data-baseweb="menu"] li:hover {
+        background: rgba(26, 26, 26, 0.05) !important;
+    }
+    
+    /* Selected option in dropdown */
+    [data-baseweb="menu"] li[aria-selected="true"] {
+        background: var(--forest) !important;
+        color: var(--cream) !important;
+    }
+    
+    /* Selectbox dropdown options */
+    div[data-baseweb="select"] > div {
+        background: rgba(255, 255, 255, 0.7) !important;
+        border-color: var(--border) !important;
+    }
+    
+    /* Multiselect tags */
+    [data-baseweb="tag"] {
+        background: var(--forest) !important;
+        color: var(--cream) !important;
+    }
+    
+    /* Toast/notification popups */
+    [data-baseweb="toast"] {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+    }
+    
+    /* Modal/Dialog backgrounds */
+    [data-baseweb="modal"] {
+        background: var(--cream) !important;
+    }
+    
+    [data-baseweb="modal"] > div {
+        background: var(--cream) !important;
+        border: 1px solid var(--border) !important;
+    }
+    
+    /* Tooltip styling */
+    [data-baseweb="tooltip"] {
+        background: var(--dark) !important;
+        color: var(--cream) !important;
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    /* Streamlit specific popover/tooltip */
+    .stTooltipIcon {
+        color: var(--text-muted) !important;
+    }
+    
+    div[data-testid="stTooltipContent"] {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    
+    /* Date picker popup */
+    [data-baseweb="calendar"] {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+    }
+    
+    /* Popover content */
+    div[data-baseweb="popover"] > div {
+        background: var(--cream) !important;
+    }
+    
+    /* List options */
+    ul[role="listbox"] {
+        background: var(--cream) !important;
+    }
+    
+    ul[role="listbox"] li {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+    }
+    
+    ul[role="listbox"] li:hover {
+        background: rgba(26, 26, 26, 0.05) !important;
+    }
+    
+    /* Option highlighted */
+    li[aria-selected="true"],
+    li[data-highlighted="true"] {
+        background: var(--forest) !important;
+        color: var(--cream) !important;
+    }
+    
+    /* Autocomplete dropdown */
+    [data-baseweb="list"] {
+        background: var(--cream) !important;
+    }
+    
+    [data-baseweb="list-item"] {
+        background: var(--cream) !important;
+        color: var(--text) !important;
+    }
+    
+    [data-baseweb="list-item"]:hover {
+        background: rgba(26, 26, 26, 0.05) !important;
     }
     
     /* Logo header */
