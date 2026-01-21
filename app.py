@@ -5,18 +5,22 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+import plotly.express as px
 from openai import OpenAI
 
 # Import from existing modules to avoid duplication
-from canslim_metrics import get_price_strength, get_earnings_growth
-from screener_logic import get_sma_trend
+from canslim_metrics import get_price_strength, get_earnings_growth, calculate_operating_leverage, get_institutional_sponsorship
+from screener_logic import get_sma_trend, validate_trend_template
+from ai_analyst import analyze_company_story
 from fetcher import (
     fetch_company_metadata, 
+    fetch_latest_10q,
     get_tickers_by_index, 
     get_tickers_by_sector,
     get_top_tickers_by_market_cap,
     get_available_indices,
     get_available_sectors,
+    get_sector_performance,
 )
 from visualizer import show_interactive_chart
 from config import config
@@ -801,6 +805,67 @@ def get_company_info_cached(ticker: str) -> dict:
         return {"name": ticker, "sector": "N/A", "industry": "N/A"}
 
 
+@st.cache_data(ttl=config.cache_ttl)
+def get_trend_template_cached(ticker: str) -> tuple[bool, dict]:
+    """Get trend template validation using existing function."""
+    try:
+        return validate_trend_template(ticker)
+    except Exception as e:
+        logger.error(f"Error getting trend template for {ticker}: {e}", exc_info=True)
+        return False, {}
+
+
+@st.cache_data(ttl=config.cache_ttl)
+def get_institutional_sponsorship_cached(ticker: str) -> tuple[bool, float | None]:
+    """Get institutional sponsorship using existing function."""
+    try:
+        return get_institutional_sponsorship(ticker)
+    except Exception as e:
+        logger.error(f"Error getting institutional sponsorship for {ticker}: {e}", exc_info=True)
+        return False, None
+
+
+@st.cache_data(ttl=config.cache_ttl)
+def get_volatility_check_cached(ticker: str) -> tuple[bool | None, float | None]:
+    """
+    Check if 20-day price range is less than 5%.
+    
+    Returns:
+        Tuple of (passes_check, price_range_percent)
+        Returns (None, None) if data cannot be fetched
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1mo")  # Get ~22 trading days
+        
+        if hist.empty or len(hist) < 20:
+            logger.warning(f"Insufficient data for 20-day volatility check for {ticker}")
+            return None, None
+        
+        # Get last 20 days
+        last_20_days = hist.tail(20)
+        
+        # Calculate price range
+        max_price = float(last_20_days["High"].max())
+        min_price = float(last_20_days["Low"].min())
+        
+        if min_price == 0:
+            logger.warning(f"Zero minimum price for {ticker}")
+            return None, None
+        
+        # Calculate percentage range: (max - min) / min
+        price_range_percent = (max_price - min_price) / min_price
+        
+        # Check if range is less than 5% (0.05)
+        passes_check = price_range_percent < 0.05
+        
+        return passes_check, price_range_percent
+        
+    except Exception as e:
+        logger.error(f"Error calculating volatility for {ticker}: {e}", exc_info=True)
+        return None, None
+
+
 def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
     """Run CANSLIM screen on tickers."""
     results = []
@@ -826,16 +891,34 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
             # Get metrics using cached wrappers
             earnings = get_earnings_growth_cached(ticker)
             rs = get_price_strength_cached(ticker)
-            sma_data = get_sma_data_cached(ticker)
+            
+            # Professional Trend Template validation (replaces simple SMA check)
+            trend_pass, trend_details = get_trend_template_cached(ticker)
+            
+            # Volatility check: 20-day price range must be less than 5%
+            volatility_pass, price_range = get_volatility_check_cached(ticker)
+            
+            # Institutional Sponsorship check
+            inst_sponsor_pass, inst_ownership = get_institutional_sponsorship_cached(ticker)
+            
+            # Operating leverage calculation
+            operating_leverage = calculate_operating_leverage(ticker)
             
             # Check CANSLIM criteria using config thresholds
-            # Use bool() to handle numpy boolean types
             c_pass = earnings is not None and earnings > config.earnings_growth_threshold
             l_pass = rs is not None and rs > config.relative_strength_threshold
-            trend_pass = bool(sma_data["above_sma"]) if sma_data["above_sma"] is not None else False
+            volatility_check = bool(volatility_pass) if volatility_pass is not None else False
             
-            if c_pass and l_pass and trend_pass:
-                info = get_company_info_cached(ticker)
+            # Early AI qualitative filtering (N and S criteria)
+            info = get_company_info_cached(ticker)
+            ai_story_pass, ai_story_reason = analyze_company_story(
+                ticker, 
+                {"name": info["name"], "sector": info["sector"], "industry": info["industry"]}
+            )
+            
+            # All criteria must pass
+            if c_pass and l_pass and trend_pass and volatility_check and inst_sponsor_pass and ai_story_pass:
+                current_price = trend_details.get("current_price", 0) if trend_details else 0
                 results.append({
                     "Ticker": ticker,
                     "Company": info["name"],
@@ -843,10 +926,12 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
                     "Industry": info["industry"],
                     "Earnings Growth %": round(earnings * 100, 1),
                     "Relative Strength": round(rs, 2),
-                    "Price": round(sma_data["current_price"], 2),
-                    "50-SMA": round(sma_data["sma_50"], 2),
+                    "Price": round(current_price, 2),
+                    "Operating Leverage": round(operating_leverage, 2) if operating_leverage is not None else None,
+                    "Institutional Support": f"{inst_ownership:.1f}%" if inst_ownership else "N/A",
+                    "Trend Template Pass": "✓" if trend_pass else "✗",
                 })
-                logger.info(f"[PASS] {ticker} passed all CANSLIM criteria")
+                logger.info(f"[PASS] {ticker} passed all CANSLIM criteria (Trend: {trend_pass}, Inst: {inst_ownership}%, AI: {ai_story_pass})")
             else:
                 # Log first few failures for debugging
                 if i < 5:
@@ -860,28 +945,64 @@ def run_screen(tickers: list[str], progress_bar) -> pd.DataFrame:
             continue
     
     logger.info(f"Screening complete: {len(results)} stocks passed out of {len(valid_tickers)}")
-    return pd.DataFrame(results) if results else pd.DataFrame()
+    
+    # Create DataFrame and sort by Operating Leverage (descending)
+    if results:
+        df = pd.DataFrame(results)
+        # Sort by Operating Leverage (highest first), handling None values
+        df = df.sort_values(
+            "Operating Leverage", 
+            ascending=False, 
+            na_position='last'
+        ).reset_index(drop=True)
+        return df
+    else:
+        return pd.DataFrame()
 
 
 # ============================================================================
 # CHART FUNCTION
 # ============================================================================
-def create_chart(ticker: str) -> go.Figure:
-    """Create interactive candlestick chart with Old Logan Capital styling."""
+def create_chart(ticker: str, timeframe: str = "daily") -> go.Figure:
+    """Create interactive candlestick chart with Old Logan Capital styling and volume."""
     try:
+        from plotly.subplots import make_subplots
+        
         stock = yf.Ticker(ticker)
-        df = stock.history(period=config.history_period)
+        
+        # Fetch data based on timeframe
+        if timeframe.lower() == "weekly":
+            df = stock.history(period="2y", interval="1wk")
+            title_suffix = "Weekly Base View"
+            sma_periods = {"sma_10w": 10, "sma_40w": 40}
+        else:
+            df = stock.history(period=config.history_period, interval="1d")
+            title_suffix = "Daily View"
+            sma_periods = {"sma_50": 50, "sma_150": 150, "sma_200": 200}
         
         if df.empty:
             logger.warning(f"No data available for {ticker}")
             return None
         
-        df["SMA_50"] = df["Close"].rolling(config.sma_period).mean()
-        sma_200_series = df["Close"].rolling(config.sma_200_period).mean() if len(df) >= config.sma_200_period else None
+        # Create subplots: price on top, volume on bottom
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.7, 0.3],
+            subplot_titles=(f"{ticker} Price Action", "Volume")
+        )
         
-        fig = go.Figure()
+        # Calculate SMAs
+        if timeframe.lower() == "weekly":
+            df["SMA_10w"] = df["Close"].rolling(window=sma_periods["sma_10w"]).mean()
+            df["SMA_40w"] = df["Close"].rolling(window=sma_periods["sma_40w"]).mean()
+        else:
+            df["SMA_50"] = df["Close"].rolling(window=sma_periods["sma_50"]).mean()
+            sma_150_series = df["Close"].rolling(150).mean() if len(df) >= 150 else None
+            sma_200_series = df["Close"].rolling(config.sma_200_period).mean() if len(df) >= config.sma_200_period else None
         
-        # Candlestick with OLC colors
+        # Candlestick with OLC colors (row 1)
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"],
             low=df["Low"], close=df["Close"], name="Price",
@@ -889,55 +1010,109 @@ def create_chart(ticker: str) -> go.Figure:
             decreasing_line_color="#8B3A3A",  # Muted red for down
             increasing_fillcolor="#2D5A4A",
             decreasing_fillcolor="#8B3A3A",
-        ))
+        ), row=1, col=1)
         
-        # 50-day SMA - Gold
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df["SMA_50"], mode="lines",
-            name=f"{config.sma_period}-Day SMA", 
-            line=dict(color="#C9A962", width=2)
-        ))
-        
-        # 200-day SMA - Dark
-        if sma_200_series is not None:
+        # Add SMAs based on timeframe (row 1)
+        if timeframe.lower() == "weekly":
+            # 10-week SMA - Gold
             fig.add_trace(go.Scatter(
-                x=df.index, y=sma_200_series, mode="lines",
-                name=f"{config.sma_200_period}-Day SMA", 
+                x=df.index, y=df["SMA_10w"], mode="lines",
+                name="10-Week SMA", 
+                line=dict(color="#C9A962", width=2)
+            ), row=1, col=1)
+            
+            # 40-week SMA - Dark
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["SMA_40w"], mode="lines",
+                name="40-Week SMA", 
                 line=dict(color="#1a1a1a", width=2)
-            ))
+            ), row=1, col=1)
+        else:
+            # 50-day SMA - Gold
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["SMA_50"], mode="lines",
+                name=f"{config.sma_period}-Day SMA", 
+                line=dict(color="#C9A962", width=2)
+            ), row=1, col=1)
+            
+            # 150-day SMA - Orange
+            if sma_150_series is not None:
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=sma_150_series, mode="lines",
+                    name="150-Day SMA", 
+                    line=dict(color="#ffa726", width=2)
+                ), row=1, col=1)
+            
+            # 200-day SMA - Dark
+            if sma_200_series is not None:
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=sma_200_series, mode="lines",
+                    name=f"{config.sma_200_period}-Day SMA", 
+                    line=dict(color="#1a1a1a", width=2)
+                ), row=1, col=1)
+        
+        # Add Volume bars with color coding (row 2)
+        if "Volume" in df.columns:
+            volume_colors = []
+            for i in range(len(df)):
+                if df["Close"].iloc[i] > df["Open"].iloc[i]:
+                    volume_colors.append("#2D5A4A")  # Green for accumulation
+                else:
+                    volume_colors.append("#8B3A3A")  # Red for distribution
+            
+            fig.add_trace(go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name="Volume",
+                marker_color=volume_colors,
+                showlegend=False,
+            ), row=2, col=1)
         
         # OLC-style layout
         fig.update_layout(
             title=dict(
-                text=f"{ticker} — 1 Year Price History",
+                text=f"{ticker} — {title_suffix}",
                 font=dict(family="Fraunces", size=24, color="#1a1a1a")
             ),
             paper_bgcolor="#F5F1E8",
             plot_bgcolor="#F5F1E8",
             font=dict(family="DM Sans", color="#1a1a1a"),
-            xaxis=dict(
-                rangeslider=dict(visible=False), 
-                gridcolor="rgba(26, 26, 26, 0.1)",
-                linecolor="rgba(26, 26, 26, 0.2)",
-                tickfont=dict(family="IBM Plex Mono", size=10),
-            ),
-            yaxis=dict(
-                gridcolor="rgba(26, 26, 26, 0.1)", 
-                side="right",
-                linecolor="rgba(26, 26, 26, 0.2)",
-                tickfont=dict(family="IBM Plex Mono", size=10),
-                tickformat="$,.0f",
-            ),
             legend=dict(
                 orientation="h", 
-                y=1.1, 
+                y=1.02, 
                 x=0.5, 
                 xanchor="center",
                 font=dict(family="IBM Plex Mono", size=11),
                 bgcolor="rgba(255, 255, 255, 0.5)",
             ),
-            height=500,
+            height=600,
             margin=dict(l=20, r=60, t=80, b=40),
+        )
+        
+        # Update x-axis (shared between subplots)
+        fig.update_xaxes(
+            rangeslider=dict(visible=False), 
+            gridcolor="rgba(26, 26, 26, 0.1)",
+            linecolor="rgba(26, 26, 26, 0.2)",
+            tickfont=dict(family="IBM Plex Mono", size=10),
+            row=2, col=1
+        )
+        
+        # Update y-axes
+        fig.update_yaxes(
+            gridcolor="rgba(26, 26, 26, 0.1)", 
+            side="right",
+            linecolor="rgba(26, 26, 26, 0.2)",
+            tickfont=dict(family="IBM Plex Mono", size=10),
+            tickformat="$,.0f",
+            row=1, col=1
+        )
+        
+        fig.update_yaxes(
+            gridcolor="rgba(26, 26, 26, 0.1)",
+            linecolor="rgba(26, 26, 26, 0.2)",
+            tickfont=dict(family="IBM Plex Mono", size=10),
+            row=2, col=1
         )
         
         return fig
@@ -965,11 +1140,48 @@ def get_ai_response(messages: list, ticker: str, metrics: dict) -> str:
     try:
         client = OpenAI(api_key=api_key)
         
-        system_prompt = f"""You are a veteran growth stock analyst at Old Logan Capital, a strategic investment firm. Analyze {ticker} based on these CANSLIM metrics:
-{chr(10).join(f'- {k}: {v}' for k, v in metrics.items())}
+        # Fetch latest 10-Q with MD&A text
+        mda_text = None
+        filing_date = None
+        try:
+            with st.spinner("Fetching SEC filing data..."):
+                financial_data = fetch_latest_10q(ticker)
+                if financial_data and financial_data.mda_text:
+                    mda_text = financial_data.mda_text
+                    filing_date = financial_data.filing_date
+                    logger.info(f"Retrieved MD&A text for {ticker} from {filing_date}")
+        except Exception as e:
+            logger.warning(f"Could not fetch MD&A text for {ticker}: {e}")
+            # Continue without MD&A - not critical
+        
+        # Build system prompt with MD&A if available
+        base_prompt = f"""You are a veteran growth stock analyst at Old Logan Capital, a strategic investment firm. Analyze {ticker} based on these CANSLIM metrics:
+{chr(10).join(f'- {k}: {v}' for k, v in metrics.items())}"""
+        
+        if mda_text:
+            base_prompt += f"""
+
+**DEEP DIVE ANALYSIS REQUIRED**
+
+Below is the Management's Discussion & Analysis (MD&A) section from the most recent 10-Q filing for {ticker} (filed on {filing_date}). This is actual text from the SEC filing.
+
+**MD&A Section:**
+{mda_text}
+
+Based on this actual SEC filing MD&A section, provide a comprehensive "Deep Dive" analysis that includes:
+- Key business trends and developments discussed by management
+- Financial condition and results of operations insights
+- Risk factors and challenges mentioned
+- Management's outlook and forward-looking statements
+- Strategic implications for investors
+
+Answer questions with the wisdom and measured perspective of an experienced value investor. Be concise, insightful, and focus on risk assessment and long-term value creation potential. Use clear, professional language. Reference specific details from the MD&A when relevant."""
+        else:
+            base_prompt += """
 
 Answer questions with the wisdom and measured perspective of an experienced value investor. Be concise, insightful, and focus on risk assessment and long-term value creation potential. Use clear, professional language."""
         
+        system_prompt = base_prompt
         full_messages = [{"role": "system", "content": system_prompt}] + messages
         
         response = client.chat.completions.create(
@@ -1089,7 +1301,7 @@ def main():
         run_screen_btn = st.button("🔍 Run Screen", type="primary", use_container_width=True)
     
     # CANSLIM criteria hint
-    st.caption(f"**Criteria:** Earnings Growth > {config.earnings_growth_threshold * 100:.0f}% · Relative Strength > {config.relative_strength_threshold:.1f} · Price > {config.sma_period}-day SMA")
+    st.caption(f"**Criteria:** Earnings Growth > {config.earnings_growth_threshold * 100:.0f}% · Relative Strength > {config.relative_strength_threshold:.1f} · Professional Trend Template · Institutional Support >30% · 20-Day Volatility < 5% · AI Qualitative Filter")
     
     # Initialize session state
     if "screen_results" not in st.session_state:
@@ -1175,8 +1387,78 @@ def main():
             </div>
         """, unsafe_allow_html=True)
         
+        # Market Structure - Sector Performance Heatmap
+        st.markdown('<span class="section-label">Market Structure</span>', unsafe_allow_html=True)
+        
+        # Initialize sector filter in session state
+        if "selected_sector_filter" not in st.session_state:
+            st.session_state["selected_sector_filter"] = "All Sectors"
+        
+        try:
+            sector_perf = get_sector_performance(st.session_state["screen_results"])
+            
+            if not sector_perf.empty:
+                # Create treemap heatmap
+                fig_heatmap = px.treemap(
+                    sector_perf,
+                    path=['Sector'],
+                    values='Stock_Count',
+                    color='Avg_Relative_Strength',
+                    color_continuous_scale='RdYlGn',  # Red to Yellow to Green
+                    title='Sector Performance Heatmap',
+                    hover_data=['Stock_Count', 'Avg_Relative_Strength'],
+                    labels={'Avg_Relative_Strength': 'Avg Relative Strength', 'Stock_Count': 'Stock Count'}
+                )
+                
+                # Update layout for dark theme
+                fig_heatmap.update_layout(
+                    paper_bgcolor="#0f0f23",
+                    plot_bgcolor="#0f0f23",
+                    font=dict(color="#c9d1d9", family="DM Sans"),
+                    title_font=dict(size=18, color="#c9d1d9"),
+                    height=400,
+                )
+                
+                # Update colorbar
+                fig_heatmap.update_coloraxes(
+                    colorbar=dict(
+                        title="Avg Relative Strength",
+                        titlefont=dict(color="#c9d1d9"),
+                        tickfont=dict(color="#c9d1d9"),
+                    )
+                )
+                
+                st.plotly_chart(fig_heatmap, use_container_width=True)
+                
+                # Sector filter dropdown
+                selected_sector = st.selectbox(
+                    "Filter by Sector (click sector in heatmap or select below):",
+                    ["All Sectors"] + sector_perf['Sector'].tolist(),
+                    key="sector_filter",
+                    index=0 if st.session_state["selected_sector_filter"] == "All Sectors" else 
+                          sector_perf['Sector'].tolist().index(st.session_state["selected_sector_filter"]) + 1 
+                          if st.session_state["selected_sector_filter"] in sector_perf['Sector'].tolist() else 0
+                )
+                st.session_state["selected_sector_filter"] = selected_sector
+            else:
+                selected_sector = "All Sectors"
+                st.info("Sector performance data not available")
+        except Exception as e:
+            logger.error(f"Error creating sector heatmap: {e}", exc_info=True)
+            selected_sector = "All Sectors"
+            st.warning("Could not generate sector heatmap")
+        
+        # Filter results by selected sector
+        if selected_sector and selected_sector != "All Sectors":
+            filtered_results = st.session_state["screen_results"][
+                st.session_state["screen_results"]["Sector"] == selected_sector
+            ]
+            st.info(f"Showing {len(filtered_results)} stocks in {selected_sector} sector")
+        else:
+            filtered_results = st.session_state["screen_results"]
+        
         st.dataframe(
-            st.session_state["screen_results"],
+            filtered_results,
             use_container_width=True,
             hide_index=True,
         )
@@ -1251,9 +1533,21 @@ def main():
             </div>
         """, unsafe_allow_html=True)
         
-        # Chart
+        # Chart with timeframe toggle
         st.markdown('<span class="section-label">Price History</span>', unsafe_allow_html=True)
-        chart = create_chart(ticker)
+        
+        # Timeframe toggle
+        col_chart1, col_chart2 = st.columns([1, 4])
+        with col_chart1:
+            timeframe = st.radio(
+                "Timeframe",
+                ["Daily View", "Weekly Base View"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+            timeframe_param = "weekly" if timeframe == "Weekly Base View" else "daily"
+        
+        chart = create_chart(ticker, timeframe_param)
         if chart:
             st.plotly_chart(chart, use_container_width=True)
         

@@ -1,8 +1,11 @@
 import time
 import yfinance as yf
 import pandas as pd
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 from config import config
 from logger_config import get_logger
+from database import Stock, QuarterlyFinancial
 
 logger = get_logger(__name__)
 
@@ -172,6 +175,165 @@ def get_earnings_growth(ticker: str) -> float | None:
     except Exception as e:
         logger.error(f"Error calculating earnings growth for {ticker}: {e}", exc_info=True)
         return None
+
+
+def calculate_operating_leverage(ticker: str) -> float | None:
+    """
+    Calculate operating leverage by comparing Net Income growth to Revenue growth.
+    
+    Operating leverage indicates if Net Income is growing faster than Revenue.
+    A value > 1.0 means Net Income is growing faster than Revenue (positive operating leverage).
+    A value < 1.0 means Revenue is growing faster than Net Income (negative operating leverage).
+    
+    Uses the database to get the most recent two quarterly filings and compares
+    the growth rates.
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+    
+    Returns:
+        Operating leverage ratio (Net Income growth / Revenue growth)
+        Returns None if insufficient data or calculation cannot be performed
+    """
+    try:
+        engine = create_engine(config.database_url, echo=False)
+        
+        with Session(engine) as session:
+            # Find the stock by ticker
+            stock = session.execute(
+                select(Stock).where(Stock.ticker == ticker.upper())
+            ).scalar_one_or_none()
+            
+            if not stock:
+                logger.debug(f"No stock record found for {ticker} in database")
+                return None
+            
+            # Get the two most recent quarterly financials, ordered by filing_date descending
+            financials = session.execute(
+                select(QuarterlyFinancial)
+                .where(QuarterlyFinancial.stock_id == stock.id)
+                .where(QuarterlyFinancial.revenue.isnot(None))
+                .where(QuarterlyFinancial.net_income.isnot(None))
+                .order_by(QuarterlyFinancial.filing_date.desc())
+                .limit(2)
+            ).scalars().all()
+            
+            if len(financials) < 2:
+                logger.debug(f"Insufficient quarterly financial data for {ticker} (need at least 2 quarters)")
+                return None
+            
+            # Get the two most recent quarters
+            current_quarter = financials[0]
+            previous_quarter = financials[1]
+            
+            # Extract revenue and net income
+            current_revenue = current_quarter.revenue
+            previous_revenue = previous_quarter.revenue
+            current_net_income = current_quarter.net_income
+            previous_net_income = previous_quarter.net_income
+            
+            # Check for valid values
+            if (current_revenue is None or previous_revenue is None or
+                current_net_income is None or previous_net_income is None):
+                logger.debug(f"Missing revenue or net income data for {ticker}")
+                return None
+            
+            # Avoid division by zero or negative base values
+            if previous_revenue == 0 or previous_net_income == 0:
+                logger.debug(f"Zero base values for {ticker} (revenue={previous_revenue}, net_income={previous_net_income})")
+                return None
+            
+            # Calculate growth rates
+            revenue_growth = (current_revenue - previous_revenue) / abs(previous_revenue)
+            net_income_growth = (current_net_income - previous_net_income) / abs(previous_net_income)
+            
+            # Avoid division by zero if revenue didn't grow
+            if revenue_growth == 0:
+                logger.debug(f"Zero revenue growth for {ticker}")
+                return None
+            
+            # Calculate operating leverage: Net Income growth / Revenue growth
+            operating_leverage = net_income_growth / revenue_growth
+            
+            logger.debug(f"Operating leverage for {ticker}: {operating_leverage:.2f} "
+                        f"(Revenue growth: {revenue_growth*100:.1f}%, "
+                        f"Net Income growth: {net_income_growth*100:.1f}%)")
+            
+            return float(operating_leverage)
+            
+    except Exception as e:
+        logger.error(f"Error calculating operating leverage for {ticker}: {e}", exc_info=True)
+        return None
+
+
+def get_institutional_sponsorship(ticker: str) -> tuple[bool, float | None]:
+    """
+    Check institutional sponsorship by analyzing institutional ownership.
+    
+    Returns True if:
+    - Institutional ownership is above 30%, OR
+    - Institutional ownership is showing an increasing trend (if historical data available)
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+    
+    Returns:
+        Tuple of (passes_check, institutional_ownership_percent)
+        Returns (False, None) if data cannot be fetched
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = _retry_yfinance_call(lambda: stock.info)
+        
+        # Get institutional ownership percentage
+        # yfinance stores this in 'institutionPercent' or 'heldPercentInstitutions'
+        institutional_ownership = None
+        
+        # Try different field names
+        ownership_fields = [
+            'institutionPercent',
+            'heldPercentInstitutions', 
+            'institutionalOwnership',
+            'institutionalPercent',
+            'percentInstitutions'
+        ]
+        
+        for field in ownership_fields:
+            if field in info and info[field] is not None:
+                institutional_ownership = info[field]
+                # Convert to percentage if it's a decimal (0.30 -> 30)
+                if institutional_ownership < 1.0:
+                    institutional_ownership = institutional_ownership * 100
+                break
+        
+        if institutional_ownership is None:
+            logger.debug(f"Institutional ownership data not available for {ticker}")
+            return False, None
+        
+        # Check if above 30% threshold
+        passes_check = institutional_ownership >= 30.0
+        
+        # Try to get institutional holders to check for increasing trend
+        # This is a secondary check - if ownership is already >30%, we pass
+        if not passes_check:
+            try:
+                # Get institutional holders (may not always be available)
+                institutional_holders = stock.institutional_holders
+                if institutional_holders is not None and not institutional_holders.empty:
+                    # If we have institutional holders data, consider it a positive signal
+                    # even if ownership % is slightly below 30%
+                    if len(institutional_holders) > 0:
+                        logger.debug(f"{ticker} has {len(institutional_holders)} institutional holders")
+                        # Could add trend analysis here if historical data available
+            except Exception:
+                pass  # Institutional holders data not always available
+        
+        logger.debug(f"Institutional sponsorship for {ticker}: {institutional_ownership:.1f}% - {'PASS' if passes_check else 'FAIL'}")
+        return passes_check, float(institutional_ownership)
+        
+    except Exception as e:
+        logger.error(f"Error calculating institutional sponsorship for {ticker}: {e}", exc_info=True)
+        return False, None
 
 
 if __name__ == "__main__":

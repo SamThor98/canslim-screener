@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import io
 from contextlib import contextmanager
@@ -253,6 +254,56 @@ def get_available_sectors() -> list[str]:
     return config.SECTORS
 
 
+def get_sector_performance(results_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate sector performance metrics from screening results.
+    
+    Aggregates average Price Strength (Relative Strength) of all tickers
+    grouped by sector. Used for creating sector heatmap.
+    
+    Args:
+        results_df: DataFrame with screening results containing 'Sector' and 'Relative Strength' columns
+    
+    Returns:
+        DataFrame with columns: Sector, Avg_Relative_Strength, Stock_Count
+    """
+    if results_df.empty or 'Sector' not in results_df.columns or 'Relative Strength' not in results_df.columns:
+        logger.warning("Cannot calculate sector performance: missing required columns")
+        return pd.DataFrame(columns=['Sector', 'Avg_Relative_Strength', 'Stock_Count'])
+    
+    try:
+        # Filter out N/A sectors and invalid relative strength values
+        valid_df = results_df[
+            (results_df['Sector'] != 'N/A') & 
+            (results_df['Relative Strength'].notna())
+        ].copy()
+        
+        if valid_df.empty:
+            logger.warning("No valid sector data for performance calculation")
+            return pd.DataFrame(columns=['Sector', 'Avg_Relative_Strength', 'Stock_Count'])
+        
+        # Group by sector and calculate metrics
+        sector_stats = valid_df.groupby('Sector').agg({
+            'Relative Strength': ['mean', 'count']
+        }).reset_index()
+        
+        # Flatten column names
+        sector_stats.columns = ['Sector', 'Avg_Relative_Strength', 'Stock_Count']
+        
+        # Round average relative strength
+        sector_stats['Avg_Relative_Strength'] = sector_stats['Avg_Relative_Strength'].round(2)
+        
+        # Sort by average relative strength (descending)
+        sector_stats = sector_stats.sort_values('Avg_Relative_Strength', ascending=False).reset_index(drop=True)
+        
+        logger.info(f"Calculated sector performance for {len(sector_stats)} sectors")
+        return sector_stats
+        
+    except Exception as e:
+        logger.error(f"Error calculating sector performance: {e}", exc_info=True)
+        return pd.DataFrame(columns=['Sector', 'Avg_Relative_Strength', 'Stock_Count'])
+
+
 def _retry_yfinance_call(func, *args, max_attempts: int = 3, delay: float = 1.0, **kwargs):
     """
     Retry wrapper for yfinance API calls to handle network issues and rate limits.
@@ -308,6 +359,7 @@ class QuarterlyFinancialData:
     net_income: float | None
     total_assets: float | None
     total_liabilities: float | None
+    mda_text: str | None = None
 
 
 def setup_sec_identity() -> None:
@@ -416,6 +468,7 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
         net_income = None
         total_assets = None
         total_liabilities = None
+        mda_text = None
         
         # Try to get financials from the filing
         try:
@@ -451,6 +504,17 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
             logger.warning(f"Could not extract all financials for {ticker}: {e}")
             print(f"Warning: Could not extract all financials: {e}")
         
+        # Extract MD&A text (Item 2 in 10-Q filings)
+        try:
+            mda_text = _extract_mda_text(filing_obj, latest_10q)
+            if mda_text:
+                logger.info(f"Extracted MD&A text for {ticker} ({len(mda_text)} characters)")
+            else:
+                logger.warning(f"Could not extract MD&A text for {ticker}")
+        except Exception as e:
+            logger.warning(f"Error extracting MD&A text for {ticker}: {e}")
+            mda_text = None
+        
         return QuarterlyFinancialData(
             form_type="10-Q",
             filing_date=latest_10q.filing_date,
@@ -459,11 +523,159 @@ def fetch_latest_10q(ticker: str) -> QuarterlyFinancialData | None:
             net_income=net_income,
             total_assets=total_assets,
             total_liabilities=total_liabilities,
+            mda_text=mda_text,
         )
         
     except Exception as e:
         logger.error(f"Error fetching 10-Q for {ticker}: {e}", exc_info=True)
         print(f"Error fetching 10-Q for {ticker}: {e}")
+        return None
+
+
+def _extract_mda_text(filing_obj, filing) -> str | None:
+    """
+    Extract MD&A (Management's Discussion & Analysis) text from a 10-Q filing.
+    
+    Args:
+        filing_obj: The filing object from edgartools
+        filing: The filing metadata object
+    
+    Returns:
+        MD&A text as a string, or None if not found
+    """
+    try:
+        # Try to get HTML content from the filing
+        # edgartools filing objects may have different methods/properties
+        html_content = None
+        
+        # Method 1: Try sections property (if edgartools provides it)
+        try:
+            if hasattr(filing_obj, 'sections'):
+                sections = filing_obj.sections
+                if sections and '2' in sections:
+                    mda_section = sections['2']
+                    if isinstance(mda_section, str):
+                        return mda_section[:15000] if len(mda_section) > 15000 else mda_section
+                    elif hasattr(mda_section, 'text'):
+                        text = mda_section.text
+                        return text[:15000] if len(text) > 15000 else text
+        except Exception as e:
+            logger.debug(f"Could not access sections property: {e}")
+        
+        # Method 2: Try html() or text() methods
+        try:
+            if hasattr(filing_obj, 'html') and callable(filing_obj.html):
+                html_content = filing_obj.html()
+            elif hasattr(filing_obj, 'text') and callable(filing_obj.text):
+                html_content = filing_obj.text()
+            elif hasattr(filing, 'html') and callable(filing.html):
+                html_content = filing.html()
+            elif hasattr(filing, 'text') and callable(filing.text):
+                html_content = filing.text()
+        except Exception as e:
+            logger.debug(f"Could not get content via html/text methods: {e}")
+        
+        # Method 3: Try document property
+        if not html_content:
+            try:
+                if hasattr(filing_obj, 'document'):
+                    html_content = filing_obj.document
+                elif hasattr(filing, 'document'):
+                    html_content = filing.document
+            except Exception as e:
+                logger.debug(f"Could not get document property: {e}")
+        
+        # Method 4: Try accessing the filing URL directly
+        if not html_content:
+            try:
+                if hasattr(filing, 'url'):
+                    url = filing.url
+                    response = requests.get(url, headers=SCRAPE_HEADERS, timeout=30)
+                    if response.status_code == 200:
+                        html_content = response.text
+            except Exception as e:
+                logger.debug(f"Could not fetch from URL: {e}")
+        
+        if not html_content:
+            logger.warning("Could not get HTML/text content from filing")
+            return None
+        
+        # Convert to string if needed
+        if not isinstance(html_content, str):
+            html_content = str(html_content)
+        
+        # Extract MD&A section (Item 2 in 10-Q filings)
+        # Look for common MD&A section markers
+        import re
+        
+        # Patterns to find MD&A section
+        mda_patterns = [
+            r'(?i)item\s*2[\.\s]*management[^\'"]*discussion[^\'"]*analysis[^\'"]*of[^\'"]*financial[^\'"]*condition[^\'"]*and[^\'"]*results[^\'"]*of[^\'"]*operations',
+            r'(?i)management[^\'"]*discussion[^\'"]*and[^\'"]*analysis[^\'"]*of[^\'"]*financial[^\'"]*condition[^\'"]*and[^\'"]*results[^\'"]*of[^\'"]*operations',
+            r'(?i)item\s*2[\.\s]*mda',
+            r'(?i)<title[^>]*>item\s*2[^<]*</title>',
+        ]
+        
+        # Try to find MD&A section start
+        mda_start = None
+        for pattern in mda_patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
+            if match:
+                mda_start = match.start()
+                break
+        
+        if mda_start is None:
+            # Fallback: look for "Item 2" or "Management's Discussion"
+            fallback_patterns = [
+                r'(?i)item\s*2[\.:]',
+                r'(?i)management[^\'"]*discussion',
+            ]
+            for pattern in fallback_patterns:
+                match = re.search(pattern, html_content, re.IGNORECASE)
+                if match:
+                    mda_start = match.start()
+                    break
+        
+        if mda_start is None:
+            logger.warning("Could not find MD&A section start marker")
+            return None
+        
+        # Find the end of MD&A section (typically Item 3 or Item 4)
+        # Look for next item marker
+        end_patterns = [
+            r'(?i)item\s*3[\.\s]',
+            r'(?i)item\s*4[\.\s]',
+            r'(?i)item\s*2a[\.\s]',
+        ]
+        
+        mda_end = len(html_content)
+        remaining_text = html_content[mda_start:]
+        for pattern in end_patterns:
+            match = re.search(pattern, remaining_text, re.IGNORECASE)
+            if match:
+                mda_end = mda_start + match.start()
+                break
+        
+        # Extract the MD&A text
+        mda_html = html_content[mda_start:mda_end]
+        
+        # Convert HTML to plain text (basic cleanup)
+        # Remove HTML tags
+        mda_text = re.sub(r'<[^>]+>', ' ', mda_html)
+        
+        # Clean up whitespace
+        mda_text = re.sub(r'\s+', ' ', mda_text)
+        mda_text = mda_text.strip()
+        
+        # Limit length to avoid token limits (keep first 15000 characters)
+        if len(mda_text) > 15000:
+            mda_text = mda_text[:15000] + "... [truncated]"
+            logger.info(f"MD&A text truncated to 15000 characters")
+        
+        return mda_text if mda_text else None
+        
+    except Exception as e:
+        logger.error(f"Error extracting MD&A text: {e}", exc_info=True)
         return None
 
 

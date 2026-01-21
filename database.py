@@ -65,6 +65,11 @@ class ScreeningResult(Base):
     company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # New fields for enhanced CANSLIM screening
+    institutional_ownership: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trend_template_pass: Mapped[bool | None] = mapped_column(Integer, nullable=True)  # SQLite doesn't have native bool
+    ai_story_pass: Mapped[bool | None] = mapped_column(Integer, nullable=True)  # SQLite doesn't have native bool
+    operating_leverage: Mapped[float | None] = mapped_column(Float, nullable=True)
     cached_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     
     # Index on ticker and cached_at for faster lookups
@@ -123,6 +128,10 @@ def get_cached_screen(ticker: str, max_age_hours: int = 24) -> dict | None:
                     "company_name": result.company_name,
                     "sector": result.sector,
                     "industry": result.industry,
+                    "institutional_ownership": result.institutional_ownership,
+                    "trend_template_pass": bool(result.trend_template_pass) if result.trend_template_pass is not None else None,
+                    "ai_story_pass": bool(result.ai_story_pass) if result.ai_story_pass is not None else None,
+                    "operating_leverage": result.operating_leverage,
                 }
             else:
                 logger.info(f"Cache MISS for {ticker} (no valid cache found)")
@@ -169,6 +178,10 @@ def save_screen_result(ticker: str, data: dict) -> bool:
                 company_name=data.get("company_name"),
                 sector=data.get("sector"),
                 industry=data.get("industry"),
+                institutional_ownership=data.get("institutional_ownership"),
+                trend_template_pass=1 if data.get("trend_template_pass") else 0 if data.get("trend_template_pass") is False else None,
+                ai_story_pass=1 if data.get("ai_story_pass") else 0 if data.get("ai_story_pass") is False else None,
+                operating_leverage=data.get("operating_leverage"),
                 cached_at=datetime.now(),
             )
             
